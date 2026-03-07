@@ -103,6 +103,8 @@ const { flirtCommand } = require('./commands/flirt');
 const characterCommand = require('./commands/character');
 const wastedCommand = require('./commands/wasted');
 const shipCommand = require('./commands/ship');
+// Add with other imports
+const joinCommand = require('./commands/join');
 const groupInfoCommand = require('./commands/groupinfo');
 const resetlinkCommand = require('./commands/resetlink');
 const staffCommand = require('./commands/staff');
@@ -154,8 +156,8 @@ const soraCommand = require('./commands/sora');
 // Global settings
 global.packname = settings.packname;
 global.author = settings.author;
-global.channelLink = "https://whatsapp.com/channel/0029Va90zAnIHphOuO8Msp3A";
-global.ytch = "Mr Unique Hacker";
+global.channelLink = "https://whatsapp.com/channel/0029VbCfXWGHAdNbhbl21P0C";
+global.ytch = "Mr King";
 
 // Add this near the top of main.js with other global configurations
 const channelInfo = {
@@ -163,8 +165,8 @@ const channelInfo = {
         forwardingScore: 1,
         isForwarded: true,
         forwardedNewsletterMessageInfo: {
-            newsletterJid: '120363161513685998@newsletter',
-            newsletterName: 'KnightBot MD',
+            newsletterJid: '120363405181626845@newsletter',
+            newsletterName: 'The Boy',
             serverMessageId: -1
         }
     }
@@ -529,6 +531,11 @@ async function handleMessages(sock, messageUpdate, printLog) {
                     const args = userMessage.split(' ').slice(1).join(' ');
                     await pmblockerCommand(sock, chatId, message, args);
                 }
+                commandExecuted = true;
+                break;
+            case userMessage.startsWith('.join '):
+                const joinArgs = rawText.slice(6).trim().split(' ');
+                await joinCommand(sock, chatId, message, joinArgs);
                 commandExecuted = true;
                 break;
             case userMessage === '.owner':
