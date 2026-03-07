@@ -447,6 +447,12 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage === '.settings':
                 await settingsCommand(sock, chatId, message);
                 break;
+            // Add this case in the switch statement where other commands are
+            case userMessage.startsWith('.down'):
+                const url = rawText.slice(5).trim(); // Remove '.down ' from the text
+                await downCommand(sock, chatId, message, url);
+                commandExecuted = true;
+                break;
             case userMessage.startsWith('.mode'):
                 // Check if sender is the owner
                 if (!message.key.fromMe && !senderIsOwnerOrSudo) {
