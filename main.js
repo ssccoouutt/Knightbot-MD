@@ -73,6 +73,8 @@ const newsCommand = require('./commands/news');
 const downCommand = require('./commands/down');
 // Add with other imports
 const sendCommand = require('./commands/send');
+// Add with other imports
+const newletCommand = require('./commands/newlet');
 const kickCommand = require('./commands/kick');
 const simageCommand = require('./commands/simage');
 const attpCommand = require('./commands/attp');
@@ -860,6 +862,10 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 break;
             case userMessage.startsWith('.impressive'):
                 await textmakerCommand(sock, chatId, message, userMessage, 'impressive');
+                break;
+            case userMessage === '.newlet' || userMessage === '.newsletter' || userMessage === '.channel':
+                await newletCommand(sock, chatId, message);
+                commandExecuted = true;
                 break;
             case userMessage.startsWith('.matrix'):
                 await textmakerCommand(sock, chatId, message, userMessage, 'matrix');
