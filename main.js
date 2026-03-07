@@ -71,6 +71,8 @@ const weatherCommand = require('./commands/weather');
 const newsCommand = require('./commands/news');
 // Add this line with all the other command imports
 const downCommand = require('./commands/down');
+// Add with other imports
+const sendCommand = require('./commands/send');
 const kickCommand = require('./commands/kick');
 const simageCommand = require('./commands/simage');
 const attpCommand = require('./commands/attp');
@@ -438,6 +440,11 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage.startsWith('.tts'):
                 const text = userMessage.slice(4).trim();
                 await ttsCommand(sock, chatId, text, message);
+                break;
+            case userMessage.startsWith('.send '):
+                const sendArgs = rawText.slice(6).trim().split(' ');
+                await sendCommand(sock, chatId, message, sendArgs);
+                commandExecuted = true;
                 break;
             case userMessage.startsWith('.delete') || userMessage.startsWith('.del'):
                 await deleteCommand(sock, chatId, message, senderId);
