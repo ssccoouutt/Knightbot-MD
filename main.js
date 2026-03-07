@@ -69,6 +69,8 @@ const quoteCommand = require('./commands/quote');
 const factCommand = require('./commands/fact');
 const weatherCommand = require('./commands/weather');
 const newsCommand = require('./commands/news');
+// Add this line with all the other command imports
+const downCommand = require('./commands/down');
 const kickCommand = require('./commands/kick');
 const simageCommand = require('./commands/simage');
 const attpCommand = require('./commands/attp');
