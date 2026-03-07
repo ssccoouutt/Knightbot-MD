@@ -1,0 +1,147 @@
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+const phoneNumber = require('awesome-phonenumber');
+
+async function sendCommand(sock, chatId, message, args) {
+    try {
+        // Parse the command: .send [number] - [message]
+        const fullText = args.join(' ');
+        const separatorIndex = fullText.indexOf('-');
+        
+        if (separatorIndex === -1) {
+            await sock.sendMessage(chatId, { 
+                text: '❌ Invalid format!\n\nUsage: `.send [WhatsApp number] - [message]`\n\nExample: `.send 1234567890 - Hello, how are you?`\n\nNote: Include country code without + or spaces' 
+            });
+            return;
+        }
+
+        // Extract number and message
+        let targetNumber = fullText.substring(0, separatorIndex).trim();
+        const messageText = fullText.substring(separatorIndex + 1).trim();
+
+        // Clean the phone number
+        targetNumber = targetNumber.replace(/[^0-9]/g, '');
+
+        // Validate phone number
+        const pn = phoneNumber('+' + targetNumber);
+        if (!pn.isValid()) {
+            await sock.sendMessage(chatId, { 
+                text: '❌ Invalid phone number! Please include country code.\nExample: 15551234567 for US, 447911123456 for UK' 
+            });
+            return;
+        }
+
+        if (!messageText) {
+            await sock.sendMessage(chatId, { 
+                text: '❌ Please provide a message to send!' 
+            });
+            return;
+        }
+
+        // Format the target JID
+        const targetJid = targetNumber + '@s.whatsapp.net';
+
+        // Check if this is a reply to a message (to forward media)
+        const quotedMessage = message.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        
+        // Send typing indicator
+        await sock.sendPresenceUpdate('composing', targetJid);
+        
+        // Prepare the message to send
+        let sendOptions = {
+            text: messageText,
+            contextInfo: {
+                forwardingScore: 1,
+                isForwarded: true,
+                forwardedNewsletterMessageInfo: {
+                    newsletterJid: '120363161513685998@newsletter',
+                    newsletterName: 'KnightBot MD',
+                    serverMessageId: -1
+                }
+            }
+        };
+
+        // If replying to media, forward it
+        if (quotedMessage) {
+            if (quotedMessage.imageMessage) {
+                // Forward image
+                const stream = await downloadContentFromMessage(quotedMessage.imageMessage, 'image');
+                const buffer = [];
+                for await (const chunk of stream) {
+                    buffer.push(chunk);
+                }
+                sendOptions = {
+                    image: Buffer.concat(buffer),
+                    caption: messageText,
+                    mimetype: quotedMessage.imageMessage.mimetype
+                };
+            } else if (quotedMessage.videoMessage) {
+                // Forward video
+                const stream = await downloadContentFromMessage(quotedMessage.videoMessage, 'video');
+                const buffer = [];
+                for await (const chunk of stream) {
+                    buffer.push(chunk);
+                }
+                sendOptions = {
+                    video: Buffer.concat(buffer),
+                    caption: messageText,
+                    mimetype: quotedMessage.videoMessage.mimetype
+                };
+            } else if (quotedMessage.documentMessage) {
+                // Forward document
+                const stream = await downloadContentFromMessage(quotedMessage.documentMessage, 'document');
+                const buffer = [];
+                for await (const chunk of stream) {
+                    buffer.push(chunk);
+                }
+                sendOptions = {
+                    document: Buffer.concat(buffer),
+                    fileName: quotedMessage.documentMessage.fileName || 'document',
+                    caption: messageText,
+                    mimetype: quotedMessage.documentMessage.mimetype
+                };
+            } else if (quotedMessage.audioMessage) {
+                // Forward audio
+                const stream = await downloadContentFromMessage(quotedMessage.audioMessage, 'audio');
+                const buffer = [];
+                for await (const chunk of stream) {
+                    buffer.push(chunk);
+                }
+                sendOptions = {
+                    audio: Buffer.concat(buffer),
+                    mimetype: quotedMessage.audioMessage.mimetype,
+                    ptt: quotedMessage.audioMessage.ptt // Voice note if true
+                };
+            } else if (quotedMessage.stickerMessage) {
+                // Forward sticker
+                const stream = await downloadContentFromMessage(quotedMessage.stickerMessage, 'sticker');
+                const buffer = [];
+                for await (const chunk of stream) {
+                    buffer.push(chunk);
+                }
+                sendOptions = {
+                    sticker: Buffer.concat(buffer)
+                };
+            }
+        }
+
+        // Send the message
+        await sock.sendMessage(targetJid, sendOptions);
+
+        // Confirm to the user
+        const formattedNumber = pn.getNumber('international');
+        await sock.sendMessage(chatId, { 
+            text: `✅ Message sent successfully to *${formattedNumber}*!\n\n📝 Message: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}` 
+        });
+
+        // Log the action
+        console.log(`📤 Message sent to ${formattedNumber} by ${chatId}`);
+
+    } catch (error) {
+        console.error('Send command error:', error);
+        await sock.sendMessage(chatId, { 
+            text: '❌ Failed to send message. Make sure the number is valid and has WhatsApp.' 
+        });
+    }
+}
+
+module.exports = sendCommand;
