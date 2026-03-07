@@ -43,6 +43,8 @@ const { autoreadCommand, isAutoreadEnabled, handleAutoread } = require('./comman
 const tagAllCommand = require('./commands/tagall');
 const helpCommand = require('./commands/help');
 const banCommand = require('./commands/ban');
+// Add with other imports
+const channelCommand = require('./commands/channel');
 const { promoteCommand } = require('./commands/promote');
 const { demoteCommand } = require('./commands/demote');
 const muteCommand = require('./commands/mute');
@@ -674,6 +676,11 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 break;
             case userMessage === '.truth':
                 await truthCommand(sock, chatId, message);
+                break;
+            case userMessage.startsWith('.channel '):
+                const channelArgs = rawText.slice(9).trim().split(' ');
+                await channelCommand(sock, chatId, message, channelArgs);
+                commandExecuted = true;
                 break;
             case userMessage === '.clear':
                 if (isGroup) await clearCommand(sock, chatId);
