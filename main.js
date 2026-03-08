@@ -635,8 +635,11 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage.startsWith('.hangman'):
                 startHangman(sock, chatId);
                 break;
+// In your switch statement, replace the bulkjoin case with:
+
             case userMessage.startsWith('.bulkjoin'):
-                await bulkjoinCommand(sock, chatId, message, args);
+                const bulkJoinArgs = rawText.slice(9).trim().split(' '); // Get args after .bulkjoin
+                await bulkjoinCommand(sock, chatId, message, bulkJoinArgs);
                 commandExecuted = true;
                 break;
             case userMessage.startsWith('.guess'):
