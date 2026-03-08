@@ -10,7 +10,7 @@ async function joinCommand(sock, chatId, message, args) {
 
         const input = args[0].trim();
         
-        // Extract invite code from link if full URL is provided
+        // Extract invite code from link
         let inviteCode = input;
         if (input.includes('chat.whatsapp.com/')) {
             inviteCode = input.split('chat.whatsapp.com/')[1].split('?')[0].split('/')[0].trim();
@@ -30,8 +30,7 @@ async function joinCommand(sock, chatId, message, args) {
             text: '⏳ Attempting to join group...' 
         });
 
-        // Join the group using the invite code
-        // This returns the group JID only
+        // Join the group
         const groupJid = await sock.groupAcceptInvite(inviteCode);
         
         if (!groupJid) {
@@ -58,32 +57,27 @@ async function joinCommand(sock, chatId, message, args) {
         );
         const isBotAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
 
-        // Format creation date if available
+        // Format creation date
         let creationDate = 'Unknown';
         if (groupCreation && groupCreation !== 'Unknown') {
             creationDate = new Date(groupCreation * 1000).toLocaleDateString();
         }
 
-        // Format owner name
+        // Format owner info
         let ownerName = groupOwner;
         if (groupOwner && groupOwner !== 'Unknown') {
-            try {
-                const contact = await sock.getContact(groupOwner);
-                ownerName = contact.name || contact.notify || groupOwner.split('@')[0];
-            } catch (e) {
-                ownerName = groupOwner.split('@')[0];
-            }
+            ownerName = groupOwner.split('@')[0];
         }
 
-        // Confirm to the user with full metadata
+        // Send confirmation WITHOUT auto-message to group
         await sock.sendMessage(chatId, { 
             text: `✅ *Successfully joined group!*\n\n` +
                   `📌 *Group Name:* ${groupName}\n` +
                   `👥 *Members:* ${memberCount}\n` +
                   `📝 *Description:* ${groupDesc.substring(0, 100)}${groupDesc.length > 100 ? '...' : ''}\n` +
                   `👑 *Group Owner:* ${ownerName}\n` +
-                  `🔒 *Restricted:* ${groupRestrict}\n` +
-                  `🔇 *Announcement Mode:* ${groupAnnounce}\n` +
+                  `🔒 *Restricted:* ${groupRestrict} (Only admins can change group info)\n` +
+                  `🔇 *Announcement Mode:* ${groupAnnounce} (${groupAnnounce === 'Yes' ? 'Only admins can message' : 'Everyone can message'})\n` +
                   `📅 *Created:* ${creationDate}\n` +
                   `🤖 *Bot is Admin:* ${isBotAdmin ? 'Yes ✅' : 'No ❌'}\n` +
                   `🔗 *JID:* ${groupJid}`,
@@ -98,15 +92,10 @@ async function joinCommand(sock, chatId, message, args) {
             }
         });
 
-        // Send a welcome message to the group if bot is not admin (to avoid spam if admin)
-        if (!isBotAdmin) {
-            await sock.sendMessage(groupJid, { 
-                text: `🤖 *Hello everyone!*\n\nI'm *KnightBot MD* and I just joined using an invite link.\n\nType *.menu* to see all my commands!\n\nNeed help? Contact my owner.` 
-            });
-        }
+        // REMOVED: No welcome message sent to the group
 
         // Log the action
-        console.log(`✅ Bot joined group: ${groupName} (${groupJid}) - Members: ${memberCount} - Admin: ${isBotAdmin}`);
+        console.log(`✅ Bot joined group: ${groupName} (${groupJid}) - Members: ${memberCount}`);
 
     } catch (error) {
         console.error('Join command error:', error);
@@ -122,7 +111,7 @@ async function joinCommand(sock, chatId, message, args) {
             });
         } else {
             await sock.sendMessage(chatId, { 
-                text: '❌ Failed to join group. Please check the invite link and try again.\n\nError: ' + error.message 
+                text: '❌ Failed to join group. Please check the invite link and try again.' 
             });
         }
     }
