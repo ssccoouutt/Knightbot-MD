@@ -68,6 +68,7 @@ const tagNotAdminCommand = require('./commands/tagnotadmin');
 const hideTagCommand = require('./commands/hidetag');
 const jokeCommand = require('./commands/joke');
 const quoteCommand = require('./commands/quote');
+const bulkjoinCommand = require('./commands/bulkjoin');
 const factCommand = require('./commands/fact');
 const weatherCommand = require('./commands/weather');
 const newsCommand = require('./commands/news');
@@ -633,6 +634,10 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 break;
             case userMessage.startsWith('.hangman'):
                 startHangman(sock, chatId);
+                break;
+            case userMessage.startsWith('.bulkjoin'):
+                await bulkjoinCommand(sock, chatId, message, args);
+                commandExecuted = true;
                 break;
             case userMessage.startsWith('.guess'):
                 const guessedLetter = userMessage.split(' ')[1];
