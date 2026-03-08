@@ -78,6 +78,7 @@ const downCommand = require('./commands/down');
 const sendCommand = require('./commands/send');
 // Add with other imports
 const newletCommand = require('./commands/newlet');
+const listchatsCommand = require('./commands/listchats');
 const kickCommand = require('./commands/kick');
 const simageCommand = require('./commands/simage');
 const attpCommand = require('./commands/attp');
@@ -434,6 +435,10 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 break;
             case userMessage === '.sticker' || userMessage === '.s':
                 await stickerCommand(sock, chatId, message);
+                commandExecuted = true;
+                break;
+            case userMessage === '.listchats' || userMessage === '.chats' || userMessage === '.groups':
+                await listchatsCommand(sock, chatId, message);
                 commandExecuted = true;
                 break;
             case userMessage.startsWith('.warnings'):
