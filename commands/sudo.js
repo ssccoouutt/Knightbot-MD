@@ -2,12 +2,28 @@ const settings = require('../settings');
 const { addSudo, removeSudo, getSudoList } = require('../lib/index');
 const isOwnerOrSudo = require('../lib/isOwner');
 
-function extractMentionedJid(message) {
+function extractMentionedJid(message, sock, chatId) {
+    // First check for mentioned users
     const mentioned = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
     if (mentioned.length > 0) return mentioned[0];
+    
+    // Check for number in text
     const text = message.message?.conversation || message.message?.extendedTextMessage?.text || '';
     const match = text.match(/\b(\d{7,15})\b/);
-    if (match) return match[1] + '@s.whatsapp.net';
+    if (match) {
+        const phoneNumber = match[1];
+        
+        // If we have group context, try to find the LID for this number
+        if (sock && chatId && chatId.endsWith('@g.us')) {
+            try {
+                // This will be handled in the command with await
+                return { type: 'phone', number: phoneNumber };
+            } catch (e) {
+                console.error('Error getting LID:', e);
+            }
+        }
+        return phoneNumber + '@s.whatsapp.net';
+    }
     return null;
 }
 
@@ -40,10 +56,32 @@ async function sudoCommand(sock, chatId, message) {
         return;
     }
 
-    const targetJid = extractMentionedJid(message);
-    if (!targetJid) {
+    // Get target - could be JID or phone number
+    const target = extractMentionedJid(message, sock, chatId);
+    if (!target) {
         await sock.sendMessage(chatId, { text: 'Please mention a user or provide a number.' },{quoted :message});
         return;
+    }
+
+    let targetJid = target;
+    
+    // If it's a phone number and we're in a group, try to get the LID
+    if (target.type === 'phone' && sock && chatId && chatId.endsWith('@g.us')) {
+        try {
+            const groupMetadata = await sock.groupMetadata(chatId);
+            const participant = groupMetadata.participants.find(p => 
+                p.id.includes(target.number)
+            );
+            if (participant && participant.lid) {
+                targetJid = participant.lid; // Use LID instead of phone number!
+                console.log('✅ Found LID for number:', target.number, '->', targetJid);
+            } else {
+                targetJid = target.number + '@s.whatsapp.net';
+            }
+        } catch (e) {
+            console.error('Error finding LID:', e);
+            targetJid = target.number + '@s.whatsapp.net';
+        }
     }
 
     if (sub === 'add') {
@@ -65,5 +103,3 @@ async function sudoCommand(sock, chatId, message) {
 }
 
 module.exports = sudoCommand;
-
-
