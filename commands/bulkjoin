@@ -1,0 +1,264 @@
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+
+async function bulkjoinCommand(sock, chatId, message, args) {
+    const startTime = Date.now();
+    const results = {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        alreadyIn: 0,
+        requestSent: 0,
+        invalid: 0,
+        details: []
+    };
+
+    try {
+        // Check if user is owner/sudo
+        const senderId = message.key.participant || message.key.remoteJid;
+        const isOwnerOrSudo = await require('../lib/isOwner')(senderId, sock, chatId);
+        
+        if (!message.key.fromMe && !isOwnerOrSudo) {
+            await sock.sendMessage(chatId, { 
+                text: '❌ Only bot owner can use this command!' 
+            }, { quoted: message });
+            return;
+        }
+
+        // Check if replying to a document
+        const quotedMessage = message.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        if (!quotedMessage?.documentMessage) {
+            await sock.sendMessage(chatId, { 
+                text: '❌ Please reply to a .txt file containing group links!\n\nFormat: One group link per line\nExample:\nhttps://chat.whatsapp.com/ABC123\nhttps://chat.whatsapp.com/XYZ789' 
+            }, { quoted: message });
+            return;
+        }
+
+        // Send initial processing message
+        await sock.sendMessage(chatId, { 
+            text: '📥 *Downloading and processing file...*\n⏳ Please wait.' 
+        });
+
+        // Download the file
+        const document = quotedMessage.documentMessage;
+        const fileName = document.fileName || 'groups.txt';
+        
+        // Check if it's a text file
+        if (!fileName.endsWith('.txt') && document.mimetype !== 'text/plain') {
+            await sock.sendMessage(chatId, { 
+                text: '❌ Please upload a .txt file!' 
+            });
+            return;
+        }
+
+        // Download file content
+        const stream = await downloadContentFromMessage(document, 'document');
+        const buffer = [];
+        for await (const chunk of stream) {
+            buffer.push(chunk);
+        }
+        
+        const fileContent = Buffer.concat(buffer).toString('utf-8');
+        const links = fileContent.split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0 && (line.includes('chat.whatsapp.com/') || line.match(/^[A-Za-z0-9_-]{20,}$/)));
+
+        results.total = links.length;
+
+        if (results.total === 0) {
+            await sock.sendMessage(chatId, { 
+                text: '❌ No valid WhatsApp group links found in the file!' 
+            });
+            return;
+        }
+
+        // Send start message
+        await sock.sendMessage(chatId, { 
+            text: `🔄 *Starting bulk join process*\n\n📊 Total links found: ${results.total}\n⏱️ Estimated time: ${results.total * 5} seconds\n\n✅ I'll update you after each join.` 
+        });
+
+        // Process each link
+        for (let i = 0; i < links.length; i++) {
+            const link = links[i];
+            const linkNumber = i + 1;
+            
+            try {
+                // Extract invite code
+                let inviteCode = link;
+                if (link.includes('chat.whatsapp.com/')) {
+                    inviteCode = link.split('chat.whatsapp.com/')[1].split('?')[0].split('/')[0].trim();
+                }
+
+                if (!inviteCode) {
+                    throw new Error('Invalid link format');
+                }
+
+                // Try to get invite info first
+                let inviteInfo = null;
+                try {
+                    inviteInfo = await sock.groupGetInviteInfo(inviteCode);
+                } catch (e) {
+                    // Ignore - proceed with join attempt
+                }
+
+                // Try to join
+                let groupJid;
+                try {
+                    groupJid = await sock.groupAcceptInvite(inviteCode);
+                } catch (joinError) {
+                    if (joinError.message?.includes('already-exists') || joinError.data === 304) {
+                        results.alreadyIn++;
+                        results.details.push({
+                            link,
+                            status: 'already_in',
+                            message: 'Bot already in group'
+                        });
+                        await sock.sendMessage(chatId, { 
+                            text: `[${linkNumber}/${results.total}] ⏭️ *Already in group*: ${inviteInfo?.subject || 'Unknown'}` 
+                        });
+                        continue;
+                    }
+                    
+                    if (joinError.message?.includes('conflict') || joinError.data === 409) {
+                        results.requestSent++;
+                        results.details.push({
+                            link,
+                            status: 'request_sent',
+                            message: 'Join request sent (needs approval)'
+                        });
+                        await sock.sendMessage(chatId, { 
+                            text: `[${linkNumber}/${results.total}] ⏳ *Request sent*: ${inviteInfo?.subject || 'Unknown'} (needs approval)` 
+                        });
+                        continue;
+                    }
+                    
+                    throw joinError;
+                }
+
+                if (groupJid) {
+                    // Successfully joined
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    let groupName = 'Unknown';
+                    let memberCount = 0;
+                    
+                    try {
+                        const metadata = await sock.groupMetadata(groupJid);
+                        groupName = metadata.subject || 'Unknown';
+                        memberCount = metadata.participants?.length || 0;
+                    } catch (e) {
+                        // Use invite info if available
+                        if (inviteInfo) {
+                            groupName = inviteInfo.subject || 'Unknown';
+                            memberCount = inviteInfo.size || 0;
+                        }
+                    }
+                    
+                    results.successful++;
+                    results.details.push({
+                        link,
+                        status: 'success',
+                        jid: groupJid,
+                        name: groupName,
+                        members: memberCount
+                    });
+                    
+                    await sock.sendMessage(chatId, { 
+                        text: `[${linkNumber}/${results.total}] ✅ *Joined*: ${groupName}\n👥 Members: ${memberCount}` 
+                    });
+                }
+                
+            } catch (error) {
+                // Failed to join
+                results.failed++;
+                results.details.push({
+                    link,
+                    status: 'failed',
+                    error: error.message
+                });
+                
+                await sock.sendMessage(chatId, { 
+                    text: `[${linkNumber}/${results.total}] ❌ *Failed*: ${link.substring(0, 30)}...\nReason: ${error.message.substring(0, 50)}` 
+                });
+            }
+
+            // Wait 5 seconds between joins (except after last)
+            if (i < links.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+        }
+
+        // Send final report
+        const timeTaken = ((Date.now() - startTime) / 1000).toFixed(1);
+        
+        let report = `📊 *BULK JOIN COMPLETE*\n\n`;
+        report += `⏱️ Time taken: ${timeTaken}s\n`;
+        report += `📁 Total links: ${results.total}\n`;
+        report += `✅ Joined: ${results.successful}\n`;
+        report += `⏭️ Already in: ${results.alreadyIn}\n`;
+        report += `⏳ Requests sent: ${results.requestSent}\n`;
+        report += `❌ Failed: ${results.failed}\n`;
+        report += `⚠️ Invalid: ${results.invalid}\n\n`;
+        
+        if (results.successful > 0) {
+            report += `*✅ Successfully Joined:*\n`;
+            results.details
+                .filter(d => d.status === 'success')
+                .slice(0, 5)
+                .forEach(d => {
+                    report += `• ${d.name} (${d.members} members)\n`;
+                });
+            if (results.successful > 5) {
+                report += `  ... and ${results.successful - 5} more\n`;
+            }
+        }
+        
+        if (results.requestSent > 0) {
+            report += `\n*⏳ Request Sent (Approval Needed):*\n`;
+            results.details
+                .filter(d => d.status === 'request_sent')
+                .slice(0, 3)
+                .forEach(d => {
+                    report += `• ${d.link.substring(0, 30)}...\n`;
+                });
+        }
+        
+        if (results.failed > 0) {
+            report += `\n*❌ Failed:*\n`;
+            results.details
+                .filter(d => d.status === 'failed')
+                .slice(0, 3)
+                .forEach(d => {
+                    report += `• ${d.link.substring(0, 30)}... (${d.error})\n`;
+                });
+        }
+        
+        report += `\n📄 Full details saved to: bulkjoin_${Date.now()}.json`;
+
+        await sock.sendMessage(chatId, { text: report });
+
+        // Save full results to file
+        const resultFile = path.join(process.cwd(), 'temp', `bulkjoin_${Date.now()}.json`);
+        fs.writeFileSync(resultFile, JSON.stringify(results, null, 2));
+        
+        // Send the result file as attachment
+        if (fs.existsSync(resultFile)) {
+            await sock.sendMessage(chatId, {
+                document: fs.readFileSync(resultFile),
+                fileName: `bulkjoin_${Date.now()}.json`,
+                mimetype: 'application/json',
+                caption: '📄 Full bulk join report'
+            });
+        }
+
+    } catch (error) {
+        console.error('Bulk join error:', error);
+        await sock.sendMessage(chatId, { 
+            text: '❌ Failed to process bulk join command.\nError: ' + error.message 
+        });
+    }
+}
+
+module.exports = bulkjoinCommand;
