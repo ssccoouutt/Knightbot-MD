@@ -73,7 +73,7 @@ const factCommand = require('./commands/fact');
 const weatherCommand = require('./commands/weather');
 const newsCommand = require('./commands/news');
 // Add this line with all the other command imports
-const downCommand = require('./commands/down');
+const { downCommand, dlstatusCommand } = require('./commands/down');
 // Add with other imports
 const sendCommand = require('./commands/send');
 // Add with other imports
@@ -469,9 +469,15 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 await settingsCommand(sock, chatId, message);
                 break;
             // Add this case in the switch statement where other commands are
+            // In switch statement:
             case userMessage.startsWith('.down'):
-                const url = rawText.slice(5).trim(); // Remove '.down ' from the text
-                await downCommand(sock, chatId, message, url);
+                const downUrl = rawText.slice(5).trim();
+                await downCommand(sock, chatId, message, downUrl);
+                commandExecuted = true;
+                break;
+
+            case userMessage === '.dlstatus' || userMessage === '.downloads':
+                await dlstatusCommand(sock, chatId, message);
                 commandExecuted = true;
                 break;
             case userMessage.startsWith('.mode'):
