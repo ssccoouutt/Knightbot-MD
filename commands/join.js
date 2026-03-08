@@ -1,5 +1,3 @@
-const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
-
 async function joinCommand(sock, chatId, message, args) {
     try {
         // Check if user provided a link/code
@@ -33,17 +31,62 @@ async function joinCommand(sock, chatId, message, args) {
         });
 
         // Join the group using the invite code
-        // The groupInviteCode is just the code part, not the full URL
-        const groupMetadata = await sock.groupAcceptInvite(inviteCode);
+        // This returns the group JID only
+        const groupJid = await sock.groupAcceptInvite(inviteCode);
         
-        // Success! Get group info
-        const groupName = groupMetadata.subject || 'Unknown Group';
-        const groupJid = groupMetadata.id;
-        const memberCount = groupMetadata.participants?.length || 0;
+        if (!groupJid) {
+            throw new Error('Failed to get group JID');
+        }
 
-        // Confirm to the user
+        // Small delay to ensure group is fully joined
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Get full group metadata
+        const groupMetadata = await sock.groupMetadata(groupJid);
+        
+        const groupName = groupMetadata.subject || 'Unnamed Group';
+        const memberCount = groupMetadata.participants?.length || 0;
+        const groupDesc = groupMetadata.desc || 'No description';
+        const groupOwner = groupMetadata.owner || 'Unknown';
+        const groupCreation = groupMetadata.creation || 'Unknown';
+        const groupRestrict = groupMetadata.restrict ? 'Yes' : 'No';
+        const groupAnnounce = groupMetadata.announce ? 'Yes' : 'No';
+        
+        // Check if bot is admin
+        const botParticipant = groupMetadata.participants?.find(p => 
+            p.id === sock.user.id.split(':')[0] + '@s.whatsapp.net'
+        );
+        const isBotAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
+
+        // Format creation date if available
+        let creationDate = 'Unknown';
+        if (groupCreation && groupCreation !== 'Unknown') {
+            creationDate = new Date(groupCreation * 1000).toLocaleDateString();
+        }
+
+        // Format owner name
+        let ownerName = groupOwner;
+        if (groupOwner && groupOwner !== 'Unknown') {
+            try {
+                const contact = await sock.getContact(groupOwner);
+                ownerName = contact.name || contact.notify || groupOwner.split('@')[0];
+            } catch (e) {
+                ownerName = groupOwner.split('@')[0];
+            }
+        }
+
+        // Confirm to the user with full metadata
         await sock.sendMessage(chatId, { 
-            text: `✅ *Successfully joined group!*\n\n📌 *Group:* ${groupName}\n👥 *Members:* ${memberCount}\n🔗 *JID:* ${groupJid}`,
+            text: `✅ *Successfully joined group!*\n\n` +
+                  `📌 *Group Name:* ${groupName}\n` +
+                  `👥 *Members:* ${memberCount}\n` +
+                  `📝 *Description:* ${groupDesc.substring(0, 100)}${groupDesc.length > 100 ? '...' : ''}\n` +
+                  `👑 *Group Owner:* ${ownerName}\n` +
+                  `🔒 *Restricted:* ${groupRestrict}\n` +
+                  `🔇 *Announcement Mode:* ${groupAnnounce}\n` +
+                  `📅 *Created:* ${creationDate}\n` +
+                  `🤖 *Bot is Admin:* ${isBotAdmin ? 'Yes ✅' : 'No ❌'}\n` +
+                  `🔗 *JID:* ${groupJid}`,
             contextInfo: {
                 forwardingScore: 1,
                 isForwarded: true,
@@ -55,13 +98,15 @@ async function joinCommand(sock, chatId, message, args) {
             }
         });
 
-        // Optional: Send a welcome message to the group
-        await sock.sendMessage(groupJid, { 
-            text: `🤖 Hello everyone! I'm a bot and just joined using an invite link.\nType *.menu* to see what I can do!` 
-        });
+        // Send a welcome message to the group if bot is not admin (to avoid spam if admin)
+        if (!isBotAdmin) {
+            await sock.sendMessage(groupJid, { 
+                text: `🤖 *Hello everyone!*\n\nI'm *KnightBot MD* and I just joined using an invite link.\n\nType *.menu* to see all my commands!\n\nNeed help? Contact my owner.` 
+            });
+        }
 
         // Log the action
-        console.log(`✅ Bot joined group: ${groupName} (${groupJid}) via command from ${chatId}`);
+        console.log(`✅ Bot joined group: ${groupName} (${groupJid}) - Members: ${memberCount} - Admin: ${isBotAdmin}`);
 
     } catch (error) {
         console.error('Join command error:', error);
@@ -77,7 +122,7 @@ async function joinCommand(sock, chatId, message, args) {
             });
         } else {
             await sock.sendMessage(chatId, { 
-                text: '❌ Failed to join group. Please check the invite link and try again.' 
+                text: '❌ Failed to join group. Please check the invite link and try again.\n\nError: ' + error.message 
             });
         }
     }
