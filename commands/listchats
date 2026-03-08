@@ -16,79 +16,39 @@ async function listchatsCommand(sock, chatId, message) {
 
         // Send processing message
         await sock.sendMessage(chatId, { 
-            text: '📊 *Fetching all your chats...*\n⏳ This may take a moment.' 
+            text: '📊 *Fetching all your groups...*\n⏳ This may take a moment.' 
         });
 
-        // Fetch all groups
+        // Fetch all groups (this works reliably)
         const groups = await sock.groupFetchAllParticipating();
         
-        // Fetch all private chats (this requires a different approach)
-        // We need to get all conversations from store
+        // For private chats, we need a different approach
+        // Note: Baileys doesn't easily expose private chat history
+        // We'll note this limitation in the report
         const privateChats = [];
         
-        // Try to get private chats from store
+        // Try to get recent messages from memory (if available)
         try {
-            // Get all chats from store
-            const allChats = store.chats || {};
-            
-            for (const [jid, chatData] of Object.entries(allChats)) {
-                // Skip groups (already handled)
-                if (jid.endsWith('@g.us')) continue;
-                
-                // Skip the bot itself
-                if (jid === sock.user.id) continue;
-                
-                // Get last message if available
-                const lastMsg = chatData.lastMessage || {};
-                const lastMessageTime = lastMsg.messageTimestamp 
-                    ? new Date(lastMsg.messageTimestamp * 1000).toLocaleString() 
-                    : 'Unknown';
-                
-                privateChats.push({
-                    jid: jid,
-                    number: jid.split('@')[0],
-                    name: chatData.name || chatData.formattedTitle || 'Unknown',
-                    lastMessage: lastMessageTime,
-                    unreadCount: chatData.unreadCount || 0,
-                    isBusiness: jid.includes('@s.whatsapp.net') ? 'No' : 'Yes'
-                });
-            }
-        } catch (e) {
-            console.log('Could not fetch private chats from store:', e);
-            
-            // Alternative: Try to get from recent messages
-            try {
-                // This is a hack - sometimes we can get private chats from message history
-                const recentMessages = store.messages || {};
-                const seenJids = new Set();
-                
-                for (const [jid, messages] of Object.entries(recentMessages)) {
-                    if (jid.endsWith('@g.us')) continue;
-                    if (jid === sock.user.id) continue;
-                    if (seenJids.has(jid)) continue;
-                    
-                    seenJids.add(jid);
-                    
-                    // Get the most recent message
-                    const lastMsg = Array.isArray(messages) && messages.length > 0 
-                        ? messages[messages.length - 1] 
-                        : null;
-                    
+            // Get all chats from the current session if possible
+            // This is a best-effort approach
+            const chats = await sock.getChats?.() || [];
+            for (const chat of chats) {
+                if (!chat.id.endsWith('@g.us') && chat.id !== sock.user.id) {
                     privateChats.push({
-                        jid: jid,
-                        number: jid.split('@')[0],
-                        name: 'Unknown',
-                        lastMessage: lastMsg?.messageTimestamp 
-                            ? new Date(lastMsg.messageTimestamp * 1000).toLocaleString() 
+                        jid: chat.id,
+                        number: chat.id.split('@')[0],
+                        name: chat.name || chat.formattedTitle || 'Unknown',
+                        lastMessage: chat.lastMessage?.messageTimestamp 
+                            ? new Date(chat.lastMessage.messageTimestamp * 1000).toLocaleString() 
                             : 'Unknown',
-                        isBusiness: jid.includes('@s.whatsapp.net') ? 'No' : 'Yes'
+                        unreadCount: chat.unreadCount || 0
                     });
                 }
-            } catch (e2) {
-                console.log('Alternative private chat fetch failed:', e2);
             }
+        } catch (e) {
+            console.log('Could not fetch private chats:', e);
         }
-        
+
         // Process groups
         const groupChats = [];
         for (const [jid, metadata] of Object.entries(groups)) {
@@ -110,9 +70,6 @@ async function listchatsCommand(sock, chatId, message) {
         
         // Sort groups by name
         groupChats.sort((a, b) => a.name.localeCompare(b.name));
-        
-        // Sort private chats by number
-        privateChats.sort((a, b) => a.number.localeCompare(b.number));
         
         // Generate report
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -139,34 +96,12 @@ async function listchatsCommand(sock, chatId, message) {
         report += `  ├─ Open Messaging Groups: ${openGroups}\n`;
         report += `  └─ Restricted (Admin Edit) Groups: ${restrictedGroups}\n`;
         report += `\n`;
-        report += `Total Private Chats: ${privateChats.length}\n`;
         
-        const businessChats = privateChats.filter(c => c.isBusiness === 'Yes').length;
-        report += `  ├─ Regular Contacts: ${privateChats.length - businessChats}\n`;
-        report += `  └─ Business Accounts: ${businessChats}\n`;
+        // Note about private chats
+        report += `⚠️ *Note: Private chat history is not available*\n`;
+        report += `   Baileys does not store private chat history by default.\n`;
+        report += `   Only groups that the bot is currently in are shown.\n`;
         report += `\n`;
-        
-        // PRIVATE CHATS SECTION FIRST
-        report += `════════════════════════════════════\n`;
-        report += `💬 PRIVATE CHATS (${privateChats.length})\n`;
-        report += `════════════════════════════════════\n\n`;
-        
-        if (privateChats.length === 0) {
-            report += `No private chat history found.\n`;
-            report += `Note: Private chats may not be available in store.\n`;
-            report += `Try sending a message to a contact first.\n\n`;
-        } else {
-            privateChats.forEach((c, index) => {
-                const businessTag = c.isBusiness === 'Yes' ? ' [BUSINESS]' : '';
-                report += `[${index + 1}] ${c.name || c.number}${businessTag}\n`;
-                report += `    ${'─'.repeat(40)}\n`;
-                report += `    📱 Number: ${c.number}\n`;
-                report += `    🆔 JID: ${c.jid}\n`;
-                report += `    📅 Last Message: ${c.lastMessage}\n`;
-                report += `    📨 Unread: ${c.unreadCount || 0}\n`;
-                report += `\n`;
-            });
-        }
         
         // GROUPS SECTION
         report += `════════════════════════════════════\n`;
@@ -249,7 +184,7 @@ async function listchatsCommand(sock, chatId, message) {
         report += `════════════════════════════════════\n`;
         report += `Export completed: ${new Date().toLocaleString()}\n`;
         report += `Total groups: ${groupChats.length}\n`;
-        report += `Total private chats: ${privateChats.length}\n`;
+        report += `Note: Private chats not available in this version\n`;
         report += `════════════════════════════════════\n`;
         
         // Write to file
@@ -261,20 +196,11 @@ async function listchatsCommand(sock, chatId, message) {
                 document: fs.readFileSync(reportFile),
                 fileName: `whatsapp_chats_${timestamp}.txt`,
                 mimetype: 'text/plain',
-                caption: `📊 *Chats Export Complete*\n\n📁 Groups: ${groupChats.length}\n💬 Private: ${privateChats.length}\n🔇 Announce Only: ${announceOnlyGroups}\n💬 Open: ${openGroups}\n\n✅ Full report attached!`
+                caption: `📊 *Groups Export Complete*\n\n📁 Groups: ${groupChats.length}\n🔇 Announce Only: ${announceOnlyGroups}\n💬 Open: ${openGroups}\n\n⚠️ Private chats not available\n✅ Full group report attached!`
             });
             
             // Send a preview
-            let preview = `📋 *CHATS PREVIEW*\n\n`;
-            
-            preview += `💬 *Private Chats (${privateChats.length}):*\n`;
-            privateChats.slice(0, 5).forEach(c => {
-                preview += `• ${c.name || c.number}${c.isBusiness === 'Yes' ? ' [BUSINESS]' : ''}\n`;
-            });
-            if (privateChats.length > 5) {
-                preview += `  ... and ${privateChats.length - 5} more\n`;
-            }
-            preview += `\n`;
+            let preview = `📋 *GROUPS PREVIEW*\n\n`;
             
             preview += `🔇 *Announcement Only Groups (${announceOnlyGroups}):*\n`;
             announceGroups.slice(0, 5).forEach(g => {
