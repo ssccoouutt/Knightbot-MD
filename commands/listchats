@@ -1,0 +1,218 @@
+const fs = require('fs');
+const path = require('path');
+
+async function listchatsCommand(sock, chatId, message) {
+    try {
+        // Check if user is owner/sudo
+        const senderId = message.key.participant || message.key.remoteJid;
+        const isOwnerOrSudo = await require('../lib/isOwner')(senderId, sock, chatId);
+        
+        if (!message.key.fromMe && !isOwnerOrSudo) {
+            await sock.sendMessage(chatId, { 
+                text: '❌ Only bot owner can use this command!' 
+            }, { quoted: message });
+            return;
+        }
+
+        // Send processing message
+        await sock.sendMessage(chatId, { 
+            text: '📊 *Fetching all your chats...*\n⏳ This may take a moment.' 
+        });
+
+        // Fetch all chats
+        const chats = await sock.groupFetchAllParticipating();
+        
+        // Also get private chats (needs different method)
+        const privateChats = [];
+        const groupChats = [];
+        
+        // Process groups
+        for (const [jid, metadata] of Object.entries(chats)) {
+            const groupInfo = {
+                jid: jid,
+                name: metadata.subject || 'Unnamed Group',
+                members: metadata.participants?.length || 0,
+                description: metadata.desc || 'No description',
+                creator: metadata.owner || 'Unknown',
+                creation: metadata.creation ? new Date(metadata.creation * 1000).toLocaleString() : 'Unknown',
+                restrict: metadata.restrict ? 'Yes (Only admins can edit)' : 'No (Everyone can edit)',
+                announce: metadata.announce ? 'Yes (Announcement Only)' : 'No (Everyone can message)',
+                inviteCode: metadata.inviteCode || 'Not available',
+                link: metadata.inviteCode ? `https://chat.whatsapp.com/${metadata.inviteCode}` : 'Not available',
+                participants: metadata.participants || []
+            };
+            
+            groupChats.push(groupInfo);
+        }
+        
+        // Sort groups by name
+        groupChats.sort((a, b) => a.name.localeCompare(b.name));
+        
+        // Generate report
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const reportFile = path.join(process.cwd(), 'temp', `chats_${timestamp}.txt`);
+        
+        let report = `========================================\n`;
+        report += `        WHATSAPP CHATS EXPORT\n`;
+        report += `========================================\n`;
+        report += `Generated: ${new Date().toLocaleString()}\n`;
+        report += `Bot Number: ${sock.user.id.split(':')[0]}\n`;
+        report += `\n`;
+        
+        // SUMMARY SECTION
+        report += `════════════════════════════════════\n`;
+        report += `📊 SUMMARY\n`;
+        report += `════════════════════════════════════\n`;
+        report += `Total Groups: ${groupChats.length}\n`;
+        
+        const announceOnlyGroups = groupChats.filter(g => g.announce === 'Yes (Announcement Only)').length;
+        const openGroups = groupChats.filter(g => g.announce === 'No (Everyone can message)').length;
+        const restrictedGroups = groupChats.filter(g => g.restrict === 'Yes (Only admins can edit)').length;
+        
+        report += `  ├─ Announcement Only Groups: ${announceOnlyGroups}\n`;
+        report += `  ├─ Open Messaging Groups: ${openGroups}\n`;
+        report += `  └─ Restricted (Admin Edit) Groups: ${restrictedGroups}\n`;
+        report += `\n`;
+        report += `Total Private Chats: ${privateChats.length}\n`;
+        report += `\n`;
+        
+        // GROUPS SECTION
+        report += `════════════════════════════════════\n`;
+        report += `👥 GROUPS (${groupChats.length})\n`;
+        report += `════════════════════════════════════\n\n`;
+        
+        groupChats.forEach((g, index) => {
+            report += `[${index + 1}] ${g.name}\n`;
+            report += `    ${'─'.repeat(50)}\n`;
+            report += `    📝 Description: ${g.description.substring(0, 100)}${g.description.length > 100 ? '...' : ''}\n`;
+            report += `    👥 Members: ${g.members}\n`;
+            report += `    🔇 Message Mode: ${g.announce}\n`;
+            report += `    🔒 Edit Mode: ${g.restrict}\n`;
+            report += `    👑 Creator: ${g.creator.split('@')[0]}\n`;
+            report += `    📅 Created: ${g.creation}\n`;
+            report += `    🆔 JID: ${g.jid}\n`;
+            report += `    🔗 Invite Link: ${g.link}\n`;
+            
+            // Add participant list (first 5)
+            if (g.participants.length > 0) {
+                report += `    👤 Recent Participants (${Math.min(5, g.participants.length)} of ${g.participants.length}):\n`;
+                const sampleParticipants = g.participants.slice(0, 5);
+                sampleParticipants.forEach(p => {
+                    const isAdmin = p.admin ? `[${p.admin}]` : '';
+                    report += `        • ${p.id.split('@')[0]} ${isAdmin}\n`;
+                });
+                if (g.participants.length > 5) {
+                    report += `        ... and ${g.participants.length - 5} more\n`;
+                }
+            }
+            report += `\n`;
+        });
+        
+        // PRIVATE CHATS SECTION (if any)
+        if (privateChats.length > 0) {
+            report += `════════════════════════════════════\n`;
+            report += `💬 PRIVATE CHATS (${privateChats.length})\n`;
+            report += `════════════════════════════════════\n\n`;
+            
+            privateChats.forEach((c, index) => {
+                report += `[${index + 1}] ${c.name || c.number}\n`;
+                report += `    ${'─'.repeat(30)}\n`;
+                report += `    📱 Number: ${c.number}\n`;
+                report += `    🆔 JID: ${c.jid}\n`;
+                report += `    📅 Last Message: ${c.lastMessage || 'Unknown'}\n`;
+                report += `\n`;
+            });
+        }
+        
+        // STATISTICS SECTION
+        report += `════════════════════════════════════\n`;
+        report += `📈 DETAILED STATISTICS\n`;
+        report += `════════════════════════════════════\n\n`;
+        
+        // Member count distribution
+        const memberRanges = {
+            '1-10': groupChats.filter(g => g.members <= 10).length,
+            '11-50': groupChats.filter(g => g.members > 10 && g.members <= 50).length,
+            '51-100': groupChats.filter(g => g.members > 50 && g.members <= 100).length,
+            '101-500': groupChats.filter(g => g.members > 100 && g.members <= 500).length,
+            '500+': groupChats.filter(g => g.members > 500).length
+        };
+        
+        report += `📊 Group Size Distribution:\n`;
+        report += `  ├─ 1-10 members: ${memberRanges['1-10']}\n`;
+        report += `  ├─ 11-50 members: ${memberRanges['11-50']}\n`;
+        report += `  ├─ 51-100 members: ${memberRanges['51-100']}\n`;
+        report += `  ├─ 101-500 members: ${memberRanges['101-500']}\n`;
+        report += `  └─ 500+ members: ${memberRanges['500+']}\n`;
+        report += `\n`;
+        
+        // Announce mode breakdown
+        report += `🔇 Announce Mode Groups:\n`;
+        const announceGroups = groupChats.filter(g => g.announce === 'Yes (Announcement Only)');
+        announceGroups.forEach((g, i) => {
+            if (i < 10) { // Show first 10
+                report += `  ├─ ${g.name} (${g.members} members)\n`;
+            } else if (i === 10) {
+                report += `  └─ ... and ${announceGroups.length - 10} more\n`;
+            }
+        });
+        report += `\n`;
+        
+        // Open messaging groups
+        report += `💬 Open Messaging Groups:\n`;
+        const openGroups_list = groupChats.filter(g => g.announce === 'No (Everyone can message)');
+        openGroups_list.forEach((g, i) => {
+            if (i < 10) { // Show first 10
+                report += `  ├─ ${g.name} (${g.members} members)\n`;
+            } else if (i === 10) {
+                report += `  └─ ... and ${openGroups_list.length - 10} more\n`;
+            }
+        });
+        report += `\n`;
+        
+        // FOOTER
+        report += `════════════════════════════════════\n`;
+        report += `Export completed: ${new Date().toLocaleString()}\n`;
+        report += `Total groups analyzed: ${groupChats.length}\n`;
+        report += `Total private chats: ${privateChats.length}\n`;
+        report += `════════════════════════════════════\n`;
+        
+        // Write to file
+        fs.writeFileSync(reportFile, report);
+        
+        // Send the file
+        if (fs.existsSync(reportFile)) {
+            await sock.sendMessage(chatId, {
+                document: fs.readFileSync(reportFile),
+                fileName: `whatsapp_chats_${timestamp}.txt`,
+                mimetype: 'text/plain',
+                caption: `📊 *Chats Export Complete*\n\n📁 Groups: ${groupChats.length}\n🔇 Announce Only: ${announceOnlyGroups}\n💬 Open: ${openGroups}\n\n✅ Full report attached!`
+            });
+            
+            // Also send a preview
+            let preview = `📋 *CHATS PREVIEW*\n\n`;
+            preview += `*Announcement Only Groups (${announceOnlyGroups}):*\n`;
+            announceGroups.slice(0, 5).forEach(g => {
+                preview += `• ${g.name} (${g.members} members)\n`;
+            });
+            preview += `\n*Open Groups (${openGroups}):*\n`;
+            openGroups_list.slice(0, 5).forEach(g => {
+                preview += `• ${g.name} (${g.members} members)\n`;
+            });
+            
+            if (announceOnlyGroups > 5 || openGroups > 5) {
+                preview += `\n📄 Check the attached file for full details!`;
+            }
+            
+            await sock.sendMessage(chatId, { text: preview });
+        }
+        
+    } catch (error) {
+        console.error('List chats error:', error);
+        await sock.sendMessage(chatId, { 
+            text: '❌ Failed to fetch chats.\nError: ' + error.message 
+        });
+    }
+}
+
+module.exports = listchatsCommand;
