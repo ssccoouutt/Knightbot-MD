@@ -84,6 +84,14 @@ async function bulkjoinCommand(sock, chatId, message, args) {
             const link = links[i];
             const linkNumber = i + 1;
             
+            // Create detail object for this link
+            const detail = {
+                link: link,
+                status: 'processing',
+                timestamp: new Date().toISOString(),
+                groupInfo: {}
+            };
+            
             try {
                 // Extract invite code
                 let inviteCode = link;
@@ -95,12 +103,24 @@ async function bulkjoinCommand(sock, chatId, message, args) {
                     throw new Error('Invalid link format');
                 }
 
-                // Try to get invite info first
+                // Get invite info first (if possible)
                 let inviteInfo = null;
                 try {
                     inviteInfo = await sock.groupGetInviteInfo(inviteCode);
+                    detail.groupInfo = {
+                        name: inviteInfo.subject || 'Unknown',
+                        description: inviteInfo.desc || 'No description',
+                        members: inviteInfo.size || 0,
+                        creator: inviteInfo.creator || 'Unknown',
+                        creation: inviteInfo.creation || 'Unknown',
+                        inviteCode: inviteCode,
+                        link: link
+                    };
                 } catch (e) {
-                    // Ignore - proceed with join attempt
+                    detail.groupInfo = {
+                        inviteCode: inviteCode,
+                        link: link
+                    };
                 }
 
                 // Try to join
@@ -109,27 +129,70 @@ async function bulkjoinCommand(sock, chatId, message, args) {
                     groupJid = await sock.groupAcceptInvite(inviteCode);
                 } catch (joinError) {
                     if (joinError.message?.includes('already-exists') || joinError.data === 304) {
+                        detail.status = 'already_in';
+                        detail.message = 'Bot already in group';
+                        
+                        // Try to get full metadata if already in
+                        try {
+                            const groups = await sock.groupFetchAllParticipating();
+                            const existingGroup = Object.entries(groups).find(([jid, g]) => 
+                                g.inviteCode === inviteCode || g.subject === detail.groupInfo.name
+                            );
+                            if (existingGroup) {
+                                const [jid, metadata] = existingGroup;
+                                detail.groupInfo = {
+                                    ...detail.groupInfo,
+                                    jid: jid,
+                                    name: metadata.subject || 'Unknown',
+                                    description: metadata.desc || 'No description',
+                                    members: metadata.participants?.length || 0,
+                                    announce: metadata.announce ? 'Yes (Only admins can message)' : 'No (Everyone can message)',
+                                    restrict: metadata.restrict ? 'Yes (Only admins can edit)' : 'No (Everyone can edit)',
+                                    creator: metadata.owner || 'Unknown',
+                                    creation: metadata.creation ? new Date(metadata.creation * 1000).toLocaleString() : 'Unknown',
+                                    inviteCode: metadata.inviteCode || inviteCode,
+                                    link: link
+                                };
+                            }
+                        } catch (e) {}
+                        
                         results.alreadyIn++;
-                        results.details.push({
-                            link,
-                            status: 'already_in',
-                            message: 'Bot already in group'
-                        });
+                        results.details.push(detail);
+                        
+                        // Send detailed update
                         await sock.sendMessage(chatId, { 
-                            text: `[${linkNumber}/${results.total}] ⏭️ *Already in group*: ${inviteInfo?.subject || 'Unknown'}` 
+                            text: `━━━━━━━━━━━━━━━━━━\n` +
+                                  `[${linkNumber}/${results.total}] ⏭️ *ALREADY IN GROUP*\n` +
+                                  `━━━━━━━━━━━━━━━━━━\n` +
+                                  `📌 *Name:* ${detail.groupInfo.name || 'Unknown'}\n` +
+                                  `👥 *Members:* ${detail.groupInfo.members || 0}\n` +
+                                  `🔗 *Link:* ${link}\n` +
+                                  `📝 *Description:* ${(detail.groupInfo.description || 'No description').substring(0, 100)}${detail.groupInfo.description?.length > 100 ? '...' : ''}\n` +
+                                  `🔒 *Restrict:* ${detail.groupInfo.restrict || 'Unknown'}\n` +
+                                  `🔇 *Announce:* ${detail.groupInfo.announce || 'Unknown'}\n` +
+                                  `🆔 *JID:* ${detail.groupInfo.jid || 'Unknown'}\n` +
+                                  `━━━━━━━━━━━━━━━━━━`
                         });
                         continue;
                     }
                     
                     if (joinError.message?.includes('conflict') || joinError.data === 409) {
+                        detail.status = 'request_sent';
+                        detail.message = 'Join request sent (needs approval)';
+                        
                         results.requestSent++;
-                        results.details.push({
-                            link,
-                            status: 'request_sent',
-                            message: 'Join request sent (needs approval)'
-                        });
+                        results.details.push(detail);
+                        
                         await sock.sendMessage(chatId, { 
-                            text: `[${linkNumber}/${results.total}] ⏳ *Request sent*: ${inviteInfo?.subject || 'Unknown'} (needs approval)` 
+                            text: `━━━━━━━━━━━━━━━━━━\n` +
+                                  `[${linkNumber}/${results.total}] ⏳ *REQUEST SENT*\n` +
+                                  `━━━━━━━━━━━━━━━━━━\n` +
+                                  `📌 *Name:* ${detail.groupInfo.name || 'Unknown'}\n` +
+                                  `👥 *Members:* ${detail.groupInfo.members || 0}\n` +
+                                  `🔗 *Link:* ${link}\n` +
+                                  `📝 *Description:* ${(detail.groupInfo.description || 'No description').substring(0, 100)}${detail.groupInfo.description?.length > 100 ? '...' : ''}\n` +
+                                  `⏰ *Needs admin approval*\n` +
+                                  `━━━━━━━━━━━━━━━━━━`
                         });
                         continue;
                     }
@@ -138,49 +201,98 @@ async function bulkjoinCommand(sock, chatId, message, args) {
                 }
 
                 if (groupJid) {
-                    // Successfully joined
+                    // Successfully joined - get full metadata
                     await new Promise(resolve => setTimeout(resolve, 2000));
-                    
-                    let groupName = 'Unknown';
-                    let memberCount = 0;
                     
                     try {
                         const metadata = await sock.groupMetadata(groupJid);
-                        groupName = metadata.subject || 'Unknown';
-                        memberCount = metadata.participants?.length || 0;
-                    } catch (e) {
-                        // Use invite info if available
-                        if (inviteInfo) {
-                            groupName = inviteInfo.subject || 'Unknown';
-                            memberCount = inviteInfo.size || 0;
-                        }
+                        
+                        detail.status = 'success';
+                        detail.jid = groupJid;
+                        detail.groupInfo = {
+                            jid: groupJid,
+                            name: metadata.subject || 'Unknown',
+                            description: metadata.desc || 'No description',
+                            members: metadata.participants?.length || 0,
+                            announce: metadata.announce ? 'Yes (Only admins can message)' : 'No (Everyone can message)',
+                            restrict: metadata.restrict ? 'Yes (Only admins can edit)' : 'No (Everyone can edit)',
+                            creator: metadata.owner || 'Unknown',
+                            creation: metadata.creation ? new Date(metadata.creation * 1000).toLocaleString() : 'Unknown',
+                            inviteCode: inviteCode,
+                            link: link,
+                            participants: metadata.participants?.map(p => ({
+                                id: p.id,
+                                admin: p.admin || 'none'
+                            })) || []
+                        };
+                        
+                        // Check if bot is admin
+                        const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+                        const botParticipant = metadata.participants?.find(p => p.id === botId);
+                        detail.groupInfo.botAdmin = botParticipant?.admin ? 'Yes' : 'No';
+                        
+                        results.successful++;
+                        results.details.push(detail);
+                        
+                        // Send detailed success message
+                        await sock.sendMessage(chatId, { 
+                            text: `━━━━━━━━━━━━━━━━━━\n` +
+                                  `[${linkNumber}/${results.total}] ✅ *SUCCESSFULLY JOINED*\n` +
+                                  `━━━━━━━━━━━━━━━━━━\n` +
+                                  `📌 *Name:* ${detail.groupInfo.name}\n` +
+                                  `👥 *Members:* ${detail.groupInfo.members}\n` +
+                                  `🔗 *Link:* ${link}\n` +
+                                  `📝 *Description:* ${detail.groupInfo.description.substring(0, 150)}${detail.groupInfo.description.length > 150 ? '...' : ''}\n` +
+                                  `🔒 *Restrict:* ${detail.groupInfo.restrict}\n` +
+                                  `🔇 *Announce:* ${detail.groupInfo.announce}\n` +
+                                  `🤖 *Bot Admin:* ${detail.groupInfo.botAdmin}\n` +
+                                  `👑 *Creator:* ${detail.groupInfo.creator.split('@')[0]}\n` +
+                                  `📅 *Created:* ${detail.groupInfo.creation}\n` +
+                                  `🆔 *JID:* ${groupJid}\n` +
+                                  `━━━━━━━━━━━━━━━━━━`
+                        });
+                        
+                    } catch (metaError) {
+                        // Use invite info if metadata fails
+                        detail.status = 'success';
+                        detail.jid = groupJid;
+                        detail.groupInfo = {
+                            ...detail.groupInfo,
+                            jid: groupJid,
+                            name: detail.groupInfo.name || 'Unknown',
+                            members: detail.groupInfo.members || 0
+                        };
+                        
+                        results.successful++;
+                        results.details.push(detail);
+                        
+                        await sock.sendMessage(chatId, { 
+                            text: `━━━━━━━━━━━━━━━━━━\n` +
+                                  `[${linkNumber}/${results.total}] ✅ *JOINED (Limited Info)*\n` +
+                                  `━━━━━━━━━━━━━━━━━━\n` +
+                                  `📌 *Name:* ${detail.groupInfo.name}\n` +
+                                  `👥 *Members:* ${detail.groupInfo.members}\n` +
+                                  `🔗 *Link:* ${link}\n` +
+                                  `🆔 *JID:* ${groupJid}\n` +
+                                  `━━━━━━━━━━━━━━━━━━`
+                        });
                     }
-                    
-                    results.successful++;
-                    results.details.push({
-                        link,
-                        status: 'success',
-                        jid: groupJid,
-                        name: groupName,
-                        members: memberCount
-                    });
-                    
-                    await sock.sendMessage(chatId, { 
-                        text: `[${linkNumber}/${results.total}] ✅ *Joined*: ${groupName}\n👥 Members: ${memberCount}` 
-                    });
                 }
                 
             } catch (error) {
                 // Failed to join
+                detail.status = 'failed';
+                detail.error = error.message;
                 results.failed++;
-                results.details.push({
-                    link,
-                    status: 'failed',
-                    error: error.message
-                });
+                results.details.push(detail);
                 
                 await sock.sendMessage(chatId, { 
-                    text: `[${linkNumber}/${results.total}] ❌ *Failed*: ${link.substring(0, 30)}...\nReason: ${error.message.substring(0, 50)}` 
+                    text: `━━━━━━━━━━━━━━━━━━\n` +
+                          `[${linkNumber}/${results.total}] ❌ *FAILED*\n` +
+                          `━━━━━━━━━━━━━━━━━━\n` +
+                          `🔗 *Link:* ${link.substring(0, 50)}...\n` +
+                          `⚠️ *Reason:* ${error.message.substring(0, 100)}\n` +
+                          `━━━━━━━━━━━━━━━━━━`
                 });
             }
 
@@ -190,66 +302,92 @@ async function bulkjoinCommand(sock, chatId, message, args) {
             }
         }
 
-        // Send final report
+        // Generate comprehensive report
         const timeTaken = ((Date.now() - startTime) / 1000).toFixed(1);
         
-        let report = `📊 *BULK JOIN COMPLETE*\n\n`;
-        report += `⏱️ Time taken: ${timeTaken}s\n`;
-        report += `📁 Total links: ${results.total}\n`;
-        report += `✅ Joined: ${results.successful}\n`;
-        report += `⏭️ Already in: ${results.alreadyIn}\n`;
-        report += `⏳ Requests sent: ${results.requestSent}\n`;
-        report += `❌ Failed: ${results.failed}\n`;
-        report += `⚠️ Invalid: ${results.invalid}\n\n`;
-        
+        let report = `📊 *BULK JOIN FINAL REPORT*\n`;
+        report += `━━━━━━━━━━━━━━━━━━\n`;
+        report += `⏱️ *Time:* ${timeTaken}s\n`;
+        report += `📁 *Total Links:* ${results.total}\n`;
+        report += `✅ *Joined:* ${results.successful}\n`;
+        report += `⏭️ *Already In:* ${results.alreadyIn}\n`;
+        report += `⏳ *Requests Sent:* ${results.requestSent}\n`;
+        report += `❌ *Failed:* ${results.failed}\n`;
+        report += `━━━━━━━━━━━━━━━━━━\n\n`;
+
+        // Successfully joined groups summary
         if (results.successful > 0) {
-            report += `*✅ Successfully Joined:*\n`;
+            report += `*✅ SUCCESSFULLY JOINED (${results.successful}):*\n`;
+            report += `━━━━━━━━━━━━━━━━━━\n`;
             results.details
                 .filter(d => d.status === 'success')
-                .slice(0, 5)
-                .forEach(d => {
-                    report += `• ${d.name} (${d.members} members)\n`;
+                .forEach((d, idx) => {
+                    report += `\n${idx + 1}. *${d.groupInfo.name || 'Unknown'}*\n`;
+                    report += `   👥 Members: ${d.groupInfo.members || 0}\n`;
+                    report += `   🔒 Restrict: ${d.groupInfo.restrict || 'Unknown'}\n`;
+                    report += `   🔇 Announce: ${d.groupInfo.announce || 'Unknown'}\n`;
+                    report += `   🤖 Bot Admin: ${d.groupInfo.botAdmin || 'No'}\n`;
+                    report += `   🆔 JID: ${d.jid || 'Unknown'}\n`;
+                    report += `   🔗 Link: ${d.link}\n`;
                 });
-            if (results.successful > 5) {
-                report += `  ... and ${results.successful - 5} more\n`;
-            }
+            report += `━━━━━━━━━━━━━━━━━━\n\n`;
         }
-        
+
+        // Groups needing approval
         if (results.requestSent > 0) {
-            report += `\n*⏳ Request Sent (Approval Needed):*\n`;
+            report += `*⏳ AWAITING APPROVAL (${results.requestSent}):*\n`;
+            report += `━━━━━━━━━━━━━━━━━━\n`;
             results.details
                 .filter(d => d.status === 'request_sent')
-                .slice(0, 3)
-                .forEach(d => {
-                    report += `• ${d.link.substring(0, 30)}...\n`;
+                .forEach((d, idx) => {
+                    report += `\n${idx + 1}. *${d.groupInfo.name || 'Unknown'}*\n`;
+                    report += `   👥 Members: ${d.groupInfo.members || 0}\n`;
+                    report += `   🔗 Link: ${d.link}\n`;
                 });
+            report += `━━━━━━━━━━━━━━━━━━\n\n`;
         }
-        
+
+        // Already in groups
+        if (results.alreadyIn > 0) {
+            report += `*⏭️ ALREADY MEMBER (${results.alreadyIn}):*\n`;
+            report += `━━━━━━━━━━━━━━━━━━\n`;
+            results.details
+                .filter(d => d.status === 'already_in')
+                .forEach((d, idx) => {
+                    report += `\n${idx + 1}. *${d.groupInfo.name || 'Unknown'}*\n`;
+                    report += `   👥 Members: ${d.groupInfo.members || 0}\n`;
+                    report += `   🔗 Link: ${d.link}\n`;
+                });
+            report += `━━━━━━━━━━━━━━━━━━\n\n`;
+        }
+
+        // Failed joins
         if (results.failed > 0) {
-            report += `\n*❌ Failed:*\n`;
+            report += `*❌ FAILED (${results.failed}):*\n`;
+            report += `━━━━━━━━━━━━━━━━━━\n`;
             results.details
                 .filter(d => d.status === 'failed')
-                .slice(0, 3)
-                .forEach(d => {
-                    report += `• ${d.link.substring(0, 30)}... (${d.error})\n`;
+                .forEach((d, idx) => {
+                    report += `\n${idx + 1}. *Link:* ${d.link.substring(0, 50)}...\n`;
+                    report += `   ⚠️ Error: ${d.error}\n`;
                 });
+            report += `━━━━━━━━━━━━━━━━━━\n`;
         }
-        
-        report += `\n📄 Full details saved to: bulkjoin_${Date.now()}.json`;
 
+        // Send final report
         await sock.sendMessage(chatId, { text: report });
 
-        // Save full results to file
+        // Save full results to JSON file
         const resultFile = path.join(process.cwd(), 'temp', `bulkjoin_${Date.now()}.json`);
         fs.writeFileSync(resultFile, JSON.stringify(results, null, 2));
         
-        // Send the result file as attachment
+        // Send the result file
         if (fs.existsSync(resultFile)) {
             await sock.sendMessage(chatId, {
                 document: fs.readFileSync(resultFile),
                 fileName: `bulkjoin_${Date.now()}.json`,
                 mimetype: 'application/json',
-                caption: '📄 Full bulk join report'
+                caption: '📄 Complete bulk join report with full group details'
             });
         }
 
