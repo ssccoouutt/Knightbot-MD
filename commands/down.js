@@ -25,8 +25,8 @@ async function downCommand(sock, chatId, message, url) {
         const contentLength = response.headers['content-length'];
         const fileName = url.split('/').pop().split('?')[0] || 'file';
 
-        // Check file size (max 50MB)
-        if (contentLength > 50 * 1024 * 1024) {
+        // Check file size (max 5000MB)
+        if (contentLength > 5000 * 1024 * 1024) {
             await sock.sendMessage(chatId, { 
                 text: '❌ File too large! Maximum size is 50MB.' 
             });
