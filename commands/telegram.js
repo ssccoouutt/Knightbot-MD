@@ -3,7 +3,7 @@ const { StringSession } = require('telegram/sessions');
 const { NewMessage } = require('telegram/events');
 const fs = require('fs');
 const path = require('path');
-const { Telegraf, Markup } = require('telegraf');
+const { Telegraf } = require('telegraf');
 
 const CONFIG_FILE = path.join(process.cwd(), 'data', 'telegram_bridge.json');
 const TEMP_DIR = path.join(process.cwd(), 'temp');
@@ -397,6 +397,40 @@ async function sendToWhatsApp(messageData, targetType) {
 function initTelegramBot() {
     telegramBot = new Telegraf(TELEGRAM_BOT_TOKEN);
     
+    // Handle /start command with help message
+    telegramBot.command('start', (ctx) => {
+        const helpMessage = 
+            `🤖 *Welcome to WhatsApp Forwarder Bot*\n\n` +
+            `This bot forwards messages from your other Telegram bot to WhatsApp with your confirmation.\n\n` +
+            `*How it works:*\n` +
+            `1️⃣ You send a message to your other Telegram bot\n` +
+            `2️⃣ I'll ask you where to forward it\n` +
+            `3️⃣ Choose destination:\n` +
+            `   • 📱 *Own Chat* - Send to your personal WhatsApp\n` +
+            `   • 👥 *All Groups* - Send to all ${WHATSAPP_GROUPS.length} configured groups\n` +
+            `   • ❌ *Cancel* - Don't forward\n\n` +
+            `*Configured Groups:*\n` +
+            `${WHATSAPP_GROUPS.map((g, i) => `   ${i+1}. \`${g}\``).join('\n')}\n\n` +
+            `*Commands:*\n` +
+            `/start - Show this help message\n` +
+            `/status - Check bot status\n\n` +
+            `_Note: This bot only responds to messages forwarded from your other Telegram bot._`;
+        
+        ctx.reply(helpMessage, { parse_mode: 'Markdown' });
+    });
+    
+    // Handle /status command
+    telegramBot.command('status', (ctx) => {
+        const statusMessage = 
+            `📊 *Bot Status*\n\n` +
+            `• WhatsApp Number: \`${WHATSAPP_NUMBER}\`\n` +
+            `• Groups Configured: ${WHATSAPP_GROUPS.length}\n` +
+            `• Bridge Active: ${isActive ? '✅' : '❌'}\n` +
+            `• Pending Messages: ${pendingMessages.size}`;
+        
+        ctx.reply(statusMessage, { parse_mode: 'Markdown' });
+    });
+    
     // Handle callback queries from inline buttons
     telegramBot.on('callback_query', async (ctx) => {
         try {
@@ -449,14 +483,14 @@ function initTelegramBot() {
         }
     });
     
-    // Handle /start command
-    telegramBot.command('start', (ctx) => {
-        ctx.reply('👋 Welcome! I forward messages from your other Telegram bot to WhatsApp with confirmation.');
+    // Handle any other messages (just ignore)
+    telegramBot.on('message', (ctx) => {
+        // Ignore - only respond to commands and callbacks
     });
     
     // Start the bot
     telegramBot.launch();
-    log('INFO', 'Telegram confirmation bot started');
+    log('INFO', 'Telegram confirmation bot started with /start help message');
 }
 
 async function startTelegramBot(sock, chatId) {
@@ -503,16 +537,42 @@ async function startTelegramBot(sock, chatId) {
                     return;
                 }
                 
+                // Get sender ID safely
+                let senderId = null;
+                if (msg.fromId) {
+                    // Handle different types of fromId (PeerUser, etc.)
+                    if (typeof msg.fromId === 'object' && msg.fromId.userId) {
+                        senderId = msg.fromId.userId;
+                    } else if (typeof msg.fromId === 'object' && msg.fromId.value) {
+                        senderId = msg.fromId.value;
+                    } else if (typeof msg.fromId === 'number' || typeof msg.fromId === 'string') {
+                        senderId = msg.fromId.toString();
+                    }
+                }
+                
+                // If no sender ID, try to get from peerId
+                if (!senderId && msg.peerId) {
+                    if (typeof msg.peerId === 'object' && msg.peerId.userId) {
+                        senderId = msg.peerId.userId;
+                    }
+                }
+                
+                // Skip if we can't determine sender
+                if (!senderId) {
+                    log('DEBUG', 'Could not determine sender ID, skipping message', { messageId: msg.id });
+                    return;
+                }
+                
                 log('INFO', 'New message received', {
                     messageId: msg.id,
-                    fromId: msg.fromId?.userId,
+                    senderId: senderId,
                     hasText: !!msg.text,
                     textLength: msg.text?.length || 0,
                     hasMedia: !!msg.media,
                     mediaType: msg.media?.className
                 });
                 
-                // Skip commands
+                // Skip commands (messages starting with /)
                 if (msg.text && msg.text.startsWith('/')) {
                     log('DEBUG', 'Skipping command message', { text: msg.text });
                     return;
@@ -560,44 +620,60 @@ async function startTelegramBot(sock, chatId) {
                     let fileUrl = '';
                     let fileName = 'file';
                     
-                    if (msg.photo) {
-                        const photo = msg.photo;
-                        fileUrl = await telegramClient.getFile(photo);
+                    try {
+                        if (msg.photo) {
+                            const photo = msg.photo;
+                            const file = await telegramClient.getFile(photo);
+                            fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${file.path}`;
+                            messageData = {
+                                type: 'media',
+                                mediaType: 'photo',
+                                fileUrl: fileUrl,
+                                caption: formattedText,
+                                timestamp: Date.now()
+                            };
+                        } else if (msg.video) {
+                            const video = msg.video;
+                            const file = await telegramClient.getFile(video);
+                            fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${file.path}`;
+                            messageData = {
+                                type: 'media',
+                                mediaType: 'video',
+                                fileUrl: fileUrl,
+                                caption: formattedText,
+                                timestamp: Date.now()
+                            };
+                        } else if (msg.document) {
+                            const document = msg.document;
+                            const file = await telegramClient.getFile(document);
+                            fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${file.path}`;
+                            fileName = document.attributes
+                                .find(a => a.className === 'DocumentAttributeFilename')?.fileName || 'file';
+                            messageData = {
+                                type: 'media',
+                                mediaType: 'document',
+                                fileUrl: fileUrl,
+                                fileName: fileName,
+                                caption: formattedText,
+                                timestamp: Date.now()
+                            };
+                        }
+                    } catch (mediaError) {
+                        log('ERROR', 'Failed to get media info', { 
+                            messageId: msg.id,
+                            error: mediaError.message 
+                        });
+                        // Still proceed with text-only
                         messageData = {
-                            type: 'media',
-                            mediaType: 'photo',
-                            fileUrl: fileUrl,
-                            caption: formattedText,
-                            timestamp: Date.now()
-                        };
-                    } else if (msg.video) {
-                        const video = msg.video;
-                        fileUrl = await telegramClient.getFile(video);
-                        messageData = {
-                            type: 'media',
-                            mediaType: 'video',
-                            fileUrl: fileUrl,
-                            caption: formattedText,
-                            timestamp: Date.now()
-                        };
-                    } else if (msg.document) {
-                        const document = msg.document;
-                        fileUrl = await telegramClient.getFile(document);
-                        fileName = document.attributes
-                            .find(a => a.className === 'DocumentAttributeFilename')?.fileName || 'file';
-                        messageData = {
-                            type: 'media',
-                            mediaType: 'document',
-                            fileUrl: fileUrl,
-                            fileName: fileName,
-                            caption: formattedText,
+                            type: 'text',
+                            content: formattedText,
                             timestamp: Date.now()
                         };
                     }
                 }
                 
                 // Store in pending messages with the original message ID
-                const pendingKey = `${msg.fromId.userId}_${msg.id}`;
+                const pendingKey = `${senderId}_${msg.id}`;
                 pendingMessages.set(pendingKey, messageData);
                 
                 // Auto-cleanup old pending messages (older than 5 minutes)
@@ -623,7 +699,7 @@ async function startTelegramBot(sock, chatId) {
                 
                 // Send with inline keyboard
                 await telegramBot.telegram.sendMessage(
-                    msg.fromId.userId, // Send to the same user who sent the original message
+                    senderId, // Send to the same user who sent the original message
                     confirmationMessage,
                     {
                         parse_mode: 'Markdown',
@@ -642,7 +718,7 @@ async function startTelegramBot(sock, chatId) {
                 );
                 
                 log('INFO', 'Confirmation request sent to Telegram bot', { 
-                    userId: msg.fromId.userId,
+                    senderId: senderId,
                     messageId: msg.id,
                     hasMedia: !!msg.media 
                 });
