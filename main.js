@@ -45,6 +45,7 @@ const helpCommand = require('./commands/help');
 const banCommand = require('./commands/ban');
 // Add with other imports
 const channelCommand = require('./commands/channel');
+const { telegramCommand, setTokenCommand, setWaCommand } = require('./commands/telegram');
 const { promoteCommand } = require('./commands/promote');
 const { demoteCommand } = require('./commands/demote');
 const muteCommand = require('./commands/mute');
@@ -741,6 +742,23 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage.startsWith('.blur'):
                 const quotedMessage = message.message?.extendedTextMessage?.contextInfo?.quotedMessage;
                 await blurCommand(sock, chatId, message, quotedMessage);
+                break;
+            case userMessage.startsWith('.telegram'):
+                const telegramArgs = rawText.slice(9).trim().split(' ');
+                await telegramCommand(sock, chatId, message, telegramArgs);
+                commandExecuted = true;
+                break;
+
+            case userMessage.startsWith('.settoken'):
+                const token = rawText.slice(9).trim();
+                await setTokenCommand(sock, chatId, message, token);
+                commandExecuted = true;
+                break;
+
+            case userMessage.startsWith('.setwa'):
+                const waNumber = rawText.slice(6).trim();
+                await setWaCommand(sock, chatId, message, waNumber);
+                commandExecuted = true;
                 break;
             case userMessage.startsWith('.welcome'):
                 if (isGroup) {
