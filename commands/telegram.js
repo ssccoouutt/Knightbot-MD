@@ -63,138 +63,124 @@ async function downloadMedia(client, message) {
 }
 
 function convertTelegramToWhatsApp(text, entities) {
+    if (!text) return text;
+    
     log('DEBUG', 'Converting text with entities', { 
         originalText: text,
-        entityCount: entities?.length || 0,
-        entities: entities?.map(e => ({
-            type: e.className,
-            offset: e.offset,
-            length: e.length,
-            content: text?.substring(e.offset, e.offset + e.length)
-        }))
+        originalLength: text.length,
+        entityCount: entities?.length || 0
     });
-    
-    if (!text) return text;
     
     // If we have entities, use them for accurate formatting
     if (entities && entities.length > 0) {
-        // Sort entities in reverse order by offset to handle nested formatting
-        const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+        // Create a map of positions that are already formatted to avoid double-processing
+        const processedPositions = new Set();
         
-        log('DEBUG', 'Sorted entities for processing', {
-            sorted: sortedEntities.map(e => ({
-                type: e.className,
-                offset: e.offset,
-                length: e.length
-            }))
-        });
+        // Sort entities by offset (ascending) to process from start to end
+        const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
         
-        // Start with original text
-        let result = text;
+        // Build the result piece by piece
+        let result = '';
+        let lastIndex = 0;
         
         for (const entity of sortedEntities) {
             const start = entity.offset;
             const end = start + entity.length;
+            
+            // Add any text before this entity
+            if (start > lastIndex) {
+                result += text.substring(lastIndex, start);
+            }
+            
+            // Get the content for this entity
             const content = text.substring(start, end);
             
             log('DEBUG', 'Processing entity', {
                 type: entity.className,
                 start,
                 end,
-                content,
-                currentResult: result
+                content
             });
             
-            // Handle different entity types
+            // Process the entity content
+            let processedContent = content;
+            
             switch (entity.className) {
                 case 'MessageEntityBold':
-                    log('INFO', 'Converting BOLD formatting', {
-                        before: content,
-                        after: `*${content}*`
-                    });
-                    // Bold: **text** → *text*
-                    result = result.substring(0, start) + 
-                             '*' + content + '*' + 
-                             result.substring(end);
+                    // Remove any existing ** or * markers
+                    processedContent = processedContent.replace(/^\*+|\*+$/g, '');
+                    processedContent = `*${processedContent}*`;
+                    log('INFO', 'Applied BOLD formatting', { original: content, formatted: processedContent });
                     break;
                     
                 case 'MessageEntityItalic':
-                    log('INFO', 'Converting ITALIC formatting', {
-                        before: content,
-                        after: `_${content}_`
-                    });
-                    // Italic: _text_ → _text_
-                    result = result.substring(0, start) + 
-                             '_' + content + '_' + 
-                             result.substring(end);
+                    // Remove any existing _ markers
+                    processedContent = processedContent.replace(/^_+|_+$/g, '');
+                    processedContent = `_${processedContent}_`;
+                    log('INFO', 'Applied ITALIC formatting', { original: content, formatted: processedContent });
                     break;
                     
                 case 'MessageEntityStrike':
-                    log('INFO', 'Converting STRIKETHROUGH formatting', {
-                        before: content,
-                        after: `~${content}~`
-                    });
-                    // Strikethrough: ~text~ → ~text~
-                    result = result.substring(0, start) + 
-                             '~' + content + '~' + 
-                             result.substring(end);
+                    // Remove any existing ~ markers
+                    processedContent = processedContent.replace(/^~+|~+$/g, '');
+                    processedContent = `~${processedContent}~`;
+                    log('INFO', 'Applied STRIKETHROUGH formatting', { original: content, formatted: processedContent });
                     break;
                     
                 case 'MessageEntityCode':
-                    log('INFO', 'Converting CODE formatting', {
-                        before: content,
-                        after: `\`\`\`${content}\`\`\``
-                    });
-                    // Code: `text` → ```text```
-                    result = result.substring(0, start) + 
-                             '```' + content + '```' + 
-                             result.substring(end);
+                case 'MessageEntityPre':
+                    // Remove any existing ` markers
+                    processedContent = processedContent.replace(/^`+|`+$/g, '');
+                    processedContent = '```' + processedContent + '```';
+                    log('INFO', 'Applied CODE formatting', { original: content, formatted: processedContent });
                     break;
                     
-                case 'MessageEntityPre':
                 case 'MessageEntityBlockquote':
-                    log('INFO', 'Converting PRE/BLOCKQUOTE formatting', {
-                        before: content,
-                        lines: content.split('\n').length
-                    });
-                    // Pre-formatted: keep as is but wrap with ```
-                    const lines = content.split('\n');
-                    const wrappedLines = lines.map(line => {
-                        return line.trim() ? '```' + line + '```' : '';
-                    });
-                    const replacement = wrappedLines.join('\n');
-                    log('DEBUG', 'Pre-formatted conversion', {
-                        original: content,
-                        wrapped: replacement
-                    });
-                    result = result.substring(0, start) + 
-                             replacement + 
-                             result.substring(end);
+                    // Remove blockquote markers
+                    processedContent = processedContent.replace(/^>+\s?/gm, '');
+                    log('INFO', 'Removed BLOCKQUOTE formatting', { original: content, formatted: processedContent });
                     break;
                     
                 case 'MessageEntityTextUrl':
                 case 'MessageEntityUrl':
-                    log('INFO', 'Skipping URL entity (WhatsApp doesn\'t support formatted links)', {
-                        content
-                    });
-                    // Links: keep as plain text
+                    // URLs: keep as plain text
+                    log('INFO', 'Keeping URL as plain text', { content });
                     break;
                     
                 default:
-                    log('WARN', 'Unknown entity type', {
-                        type: entity.className,
-                        content
-                    });
+                    log('WARN', 'Unknown entity type', { type: entity.className });
                     break;
             }
             
-            log('DEBUG', 'After entity processing', {
-                type: entity.className,
-                newResult: result
-            });
+            // Add the processed content
+            result += processedContent;
+            lastIndex = end;
         }
         
-        log('INFO', 'Final formatted text (entities method)', {
+        // Add any remaining text after the last entity
+        if (lastIndex < text.length) {
+            result += text.substring(lastIndex);
+        }
+        
+        log('DEBUG', 'Intermediate result after entity processing', {
+            resultLength: result.length,
+            resultPreview: result.substring(0, 200) + '...'
+        });
+        
+        // Final cleanup: handle any remaining markdown patterns
+        // But be careful not to break WhatsApp formatting
+        result = result.replace(/\*\*(.*?)\*\*/g, '*$1*');  // Replace ** with *
+        result = result.replace(/__(.*?)__/g, '_$1_');     // Replace __ with _
+        result = result.replace(/~~(.*?)~~/g, '~$1~');     // Replace ~~ with ~
+        
+        // Ensure we don't have triple asterisks or other anomalies
+        result = result.replace(/\*{3,}/g, '**');  // Replace *** with **
+        result = result.replace(/_{3,}/g, '__');   // Replace ___ with __
+        result = result.replace(/~{3,}/g, '~~');   // Replace ~~~ with ~~
+        
+        log('INFO', 'Final formatted text', {
+            originalLength: text.length,
+            finalLength: result.length,
             original: text,
             formatted: result
         });
@@ -202,63 +188,23 @@ function convertTelegramToWhatsApp(text, entities) {
         return result;
     }
     
+    // Fallback to regex if no entities available
     log('DEBUG', 'No entities found, using regex fallback');
     
-    // Fallback to regex if no entities available
     let formatted = text;
     
-    // Log regex patterns being applied
-    const regexSteps = [];
-    
-    // Remove escape characters
-    const step1 = formatted.replace(/\\([^a-zA-Z0-9])/g, '$1');
-    if (step1 !== formatted) regexSteps.push({ step: 'remove_escapes', before: formatted, after: step1 });
-    formatted = step1;
-    
     // Convert Telegram markdown to WhatsApp format
-    const step2 = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');
-    if (step2 !== formatted) regexSteps.push({ step: 'bold', before: formatted, after: step2 });
-    formatted = step2;
-    
-    const step3 = formatted.replace(/__(.*?)__/g, '_$1_');
-    if (step3 !== formatted) regexSteps.push({ step: 'italic', before: formatted, after: step3 });
-    formatted = step3;
-    
-    const step4 = formatted.replace(/~~(.*?)~~/g, '~$1~');
-    if (step4 !== formatted) regexSteps.push({ step: 'strikethrough', before: formatted, after: step4 });
-    formatted = step4;
-    
-    const step5 = formatted.replace(/`(.*?)`/g, '```$1```');
-    if (step5 !== formatted) regexSteps.push({ step: 'code', before: formatted, after: step5 });
-    formatted = step5;
-    
-    // Handle pre-formatted blocks
-    const step6 = formatted.replace(/```(.*?)```/gs, (match, code) => {
-        const lines = code.split('\n');
-        return lines.map(line => line.trim() ? '```' + line + '```' : '').join('\n');
-    });
-    if (step6 !== formatted) regexSteps.push({ step: 'pre', before: formatted, after: step6 });
-    formatted = step6;
-    
-    // Clean up whitespace
-    const step7 = formatted.replace(/[ \t]+/g, ' ');
-    if (step7 !== formatted) regexSteps.push({ step: 'spaces', before: formatted, after: step7 });
-    formatted = step7;
-    
-    const step8 = formatted.replace(/\n{3,}/g, '\n\n');
-    if (step8 !== formatted) regexSteps.push({ step: 'newlines', before: formatted, after: step8 });
-    formatted = step8;
-    
-    if (regexSteps.length > 0) {
-        log('DEBUG', 'Regex conversion steps applied', regexSteps);
-    }
+    formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');     // Bold
+    formatted = formatted.replace(/__(.*?)__/g, '_$1_');        // Italic
+    formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');        // Strikethrough
+    formatted = formatted.replace(/`(.*?)`/g, '```$1```');      // Code
     
     log('INFO', 'Final formatted text (regex method)', {
         original: text,
-        formatted: formatted.trim()
+        formatted: formatted
     });
     
-    return formatted.trim();
+    return formatted;
 }
 
 async function startTelegramBot(sock, chatId) {
@@ -304,6 +250,7 @@ async function startTelegramBot(sock, chatId) {
                     messageId: msg.id,
                     fromId: msg.fromId?.userId,
                     hasText: !!msg.text,
+                    textLength: msg.text?.length || 0,
                     hasMedia: !!msg.media,
                     mediaType: msg.media?.className
                 });
@@ -320,27 +267,28 @@ async function startTelegramBot(sock, chatId) {
                 
                 log('DEBUG', 'Message details', {
                     rawText: text,
-                    entityCount: entities.length,
-                    entities: entities.map(e => ({
-                        type: e.className,
-                        offset: e.offset,
-                        length: e.length
-                    }))
+                    rawTextLength: text.length,
+                    entityCount: entities.length
                 });
                 
                 // Convert formatting for WhatsApp
                 const formattedText = convertTelegramToWhatsApp(text, entities);
                 
-                log('INFO', 'Sending to WhatsApp', {
-                    originalText: text,
-                    formattedText: formattedText,
+                log('INFO', 'Preparing to send to WhatsApp', {
+                    originalTextLength: text.length,
+                    formattedTextLength: formattedText.length,
+                    originalTextPreview: text.substring(0, 100) + '...',
+                    formattedTextPreview: formattedText.substring(0, 100) + '...',
                     hasMedia: !!msg.media
                 });
                 
                 // TEXT ONLY - send with formatting
                 if (!msg.media) {
                     await sock.sendMessage(whatsappJid, { text: formattedText });
-                    log('INFO', 'Text message sent to WhatsApp', { text: formattedText });
+                    log('INFO', 'Text message sent to WhatsApp', { 
+                        textLength: formattedText.length,
+                        textPreview: formattedText.substring(0, 100) + '...'
+                    });
                     return;
                 }
                 
@@ -348,8 +296,8 @@ async function startTelegramBot(sock, chatId) {
                 log('DEBUG', 'Downloading media', { messageId: msg.id });
                 const buffer = await downloadMedia(telegramClient, msg);
                 
-                if (!buffer) {
-                    log('ERROR', 'Failed to download media', { messageId: msg.id });
+                if (!buffer || buffer.length === 0) {
+                    log('ERROR', 'Failed to download media or empty buffer', { messageId: msg.id });
                     return;
                 }
                 
@@ -363,14 +311,20 @@ async function startTelegramBot(sock, chatId) {
                         image: buffer,
                         caption: formattedText
                     });
-                    log('INFO', 'Photo sent to WhatsApp with caption', { caption: formattedText });
+                    log('INFO', 'Photo sent to WhatsApp with caption', { 
+                        captionLength: formattedText.length,
+                        captionPreview: formattedText.substring(0, 100) + '...'
+                    });
                 }
                 else if (msg.video) {
                     await sock.sendMessage(whatsappJid, {
                         video: buffer,
                         caption: formattedText
                     });
-                    log('INFO', 'Video sent to WhatsApp with caption', { caption: formattedText });
+                    log('INFO', 'Video sent to WhatsApp with caption', { 
+                        captionLength: formattedText.length,
+                        captionPreview: formattedText.substring(0, 100) + '...'
+                    });
                 }
                 else if (msg.document) {
                     const fileName = msg.document.attributes
@@ -381,14 +335,21 @@ async function startTelegramBot(sock, chatId) {
                         fileName: fileName,
                         caption: formattedText
                     });
-                    log('INFO', 'Document sent to WhatsApp', { fileName, caption: formattedText });
+                    log('INFO', 'Document sent to WhatsApp', { 
+                        fileName, 
+                        captionLength: formattedText.length,
+                        captionPreview: formattedText.substring(0, 100) + '...'
+                    });
                 }
                 else if (msg.audio) {
                     await sock.sendMessage(whatsappJid, {
                         audio: buffer,
                         caption: formattedText
                     });
-                    log('INFO', 'Audio sent to WhatsApp', { caption: formattedText });
+                    log('INFO', 'Audio sent to WhatsApp', { 
+                        captionLength: formattedText.length,
+                        captionPreview: formattedText.substring(0, 100) + '...'
+                    });
                 }
                 else if (msg.voice) {
                     await sock.sendMessage(whatsappJid, {
