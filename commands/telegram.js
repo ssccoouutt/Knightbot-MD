@@ -1,10 +1,15 @@
 const { Telegraf } = require('telegraf');
+const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 
 const CONFIG_FILE = path.join(process.cwd(), 'data', 'telegram_bridge.json');
+const TEMP_DIR = path.join(process.cwd(), 'temp');
 let telegramBot = null;
 let isActive = false;
+
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 // Load or create config
 function loadConfig() {
@@ -25,24 +30,25 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// Format message for WhatsApp
-function formatTelegramMessage(ctx) {
-    const from = ctx.from;
-    const chat = ctx.chat;
-    const message = ctx.message;
-    
-    let formatted = `📨 *Telegram Message*\n\n`;
-    formatted += `👤 *From:* ${from.first_name || ''} ${from.last_name || ''}`;
-    if (from.username) formatted += ` (@${from.username})`;
-    formatted += `\n🆔 *User ID:* \`${from.id}\``;
-    
-    if (chat.type !== 'private') {
-        formatted += `\n💬 *Chat:* ${chat.title || 'Unknown'}`;
+// Download file from Telegram
+async function downloadTelegramFile(fileId, botToken) {
+    try {
+        const fileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`;
+        const response = await axios.get(fileUrl);
+        const filePath = response.data.result.file_path;
+        const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+        
+        const fileResponse = await axios({
+            method: 'GET',
+            url: downloadUrl,
+            responseType: 'arraybuffer'
+        });
+        
+        return Buffer.from(fileResponse.data);
+    } catch (error) {
+        console.error('Download error:', error);
+        return null;
     }
-    
-    formatted += `\n\n📝 *Message:*\n${message.text || '[Non-text message]'}`;
-    
-    return formatted;
 }
 
 // Start Telegram bot
@@ -51,14 +57,14 @@ async function startTelegramBot(sock, chatId) {
     
     if (!config.token) {
         await sock.sendMessage(chatId, { 
-            text: '❌ Please set your Telegram bot token first using:\n`.settoken YOUR_BOT_TOKEN`' 
+            text: '❌ Set token first: `.settoken YOUR_TOKEN`' 
         });
         return false;
     }
     
     if (!config.whatsappNumber) {
         await sock.sendMessage(chatId, { 
-            text: '❌ Please set your WhatsApp number first using:\n`.setwa YOUR_NUMBER`' 
+            text: '❌ Set WhatsApp number first: `.setwa YOUR_NUMBER`' 
         });
         return false;
     }
@@ -66,31 +72,113 @@ async function startTelegramBot(sock, chatId) {
     try {
         telegramBot = new Telegraf(config.token);
         
-        // Handle all messages
+        // Handle ALL messages (including commands)
         telegramBot.on('message', async (ctx) => {
             try {
-                const formattedMsg = formatTelegramMessage(ctx);
+                // Skip if it's a command and you want to ignore commands
+                // if (ctx.message.text && ctx.message.text.startsWith('/')) return;
+                
+                const message = ctx.message;
                 const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
                     config.whatsappNumber :
                     `${config.whatsappNumber}@s.whatsapp.net`;
                 
-                await sock.sendMessage(whatsappJid, {
-                    text: formattedMsg,
-                    contextInfo: {
-                        forwardingScore: 1,
-                        isForwarded: true,
-                        forwardedNewsletterMessageInfo: {
-                            newsletterJid: '120363161513685998@newsletter',
-                            newsletterName: 'Telegram Bridge',
-                            serverMessageId: -1
-                        }
+                // Handle different message types
+                if (message.text) {
+                    // Plain text - send exactly as is
+                    await sock.sendMessage(whatsappJid, { text: message.text });
+                    
+                } else if (message.photo) {
+                    // Photo with optional caption
+                    const photo = message.photo[message.photo.length - 1];
+                    const buffer = await downloadTelegramFile(photo.file_id, config.token);
+                    if (buffer) {
+                        await sock.sendMessage(whatsappJid, {
+                            image: buffer,
+                            caption: message.caption || ''
+                        });
                     }
-                });
+                    
+                } else if (message.video) {
+                    // Video with optional caption
+                    const buffer = await downloadTelegramFile(message.video.file_id, config.token);
+                    if (buffer) {
+                        await sock.sendMessage(whatsappJid, {
+                            video: buffer,
+                            caption: message.caption || ''
+                        });
+                    }
+                    
+                } else if (message.document) {
+                    // Document with optional caption
+                    const buffer = await downloadTelegramFile(message.document.file_id, config.token);
+                    if (buffer) {
+                        await sock.sendMessage(whatsappJid, {
+                            document: buffer,
+                            fileName: message.document.file_name || 'file',
+                            mimetype: message.document.mime_type || 'application/octet-stream',
+                            caption: message.caption || ''
+                        });
+                    }
+                    
+                } else if (message.audio) {
+                    // Audio file
+                    const buffer = await downloadTelegramFile(message.audio.file_id, config.token);
+                    if (buffer) {
+                        await sock.sendMessage(whatsappJid, {
+                            audio: buffer,
+                            mimetype: message.audio.mime_type || 'audio/mpeg',
+                            caption: message.caption || ''
+                        });
+                    }
+                    
+                } else if (message.voice) {
+                    // Voice message
+                    const buffer = await downloadTelegramFile(message.voice.file_id, config.token);
+                    if (buffer) {
+                        await sock.sendMessage(whatsappJid, {
+                            audio: buffer,
+                            mimetype: 'audio/ogg',
+                            ptt: true // Send as voice note
+                        });
+                    }
+                    
+                } else if (message.sticker) {
+                    // Sticker
+                    const buffer = await downloadTelegramFile(message.sticker.file_id, config.token);
+                    if (buffer) {
+                        await sock.sendMessage(whatsappJid, {
+                            sticker: buffer
+                        });
+                    }
+                    
+                } else if (message.location) {
+                    // Location
+                    const { latitude, longitude } = message.location;
+                    await sock.sendMessage(whatsappJid, {
+                        text: `📍 Location: ${latitude}, ${longitude}\nhttps://maps.google.com/?q=${latitude},${longitude}`
+                    });
+                    
+                } else if (message.contact) {
+                    // Contact
+                    const contact = message.contact;
+                    await sock.sendMessage(whatsappJid, {
+                        text: `👤 Contact: ${contact.first_name} ${contact.last_name || ''}\n📱 Phone: ${contact.phone_number}`
+                    });
+                    
+                } else {
+                    // Unknown type - send raw info
+                    await sock.sendMessage(whatsappJid, {
+                        text: `[Unsupported message type: ${Object.keys(message)[0]}]`
+                    });
+                }
                 
-                console.log(`✅ Forwarded message from Telegram user ${ctx.from.id}`);
+                console.log(`✅ Forwarded from Telegram: ${ctx.from.id}`);
                 
             } catch (err) {
                 console.error('Forward error:', err);
+                // Optionally notify about error
+                // await sock.sendMessage(whatsappJid, { text: '❌ Failed to forward message' });
             }
         });
 
@@ -101,7 +189,7 @@ async function startTelegramBot(sock, chatId) {
         saveConfig(config);
         
         await sock.sendMessage(chatId, { 
-            text: `✅ *Telegram Bridge Activated!*\n\n📱 Forwarding to: ${config.whatsappNumber}\n🤖 Bot: @${telegramBot.botInfo?.username || 'Unknown'}` 
+            text: `✅ *Telegram Bridge Active*\n📱 To: ${config.whatsappNumber}` 
         });
         
         return true;
@@ -109,7 +197,7 @@ async function startTelegramBot(sock, chatId) {
     } catch (error) {
         console.error('Telegram bot error:', error);
         await sock.sendMessage(chatId, { 
-            text: `❌ Failed to start: ${error.message}` 
+            text: `❌ Failed: ${error.message}` 
         });
         return false;
     }
@@ -136,45 +224,38 @@ async function stopTelegramBot(sock, chatId) {
 async function telegramCommand(sock, chatId, message, args) {
     const subCommand = args[0]?.toLowerCase();
     
-    // Show status if no subcommand
     if (!subCommand) {
         const config = loadConfig();
-        let status = `📊 *Telegram Bridge Status*\n\n`;
-        status += `🔹 *Active:* ${isActive ? '✅ YES' : '❌ NO'}\n`;
-        status += `🔹 *Token Set:* ${config.token ? '✅' : '❌'}\n`;
-        status += `🔹 *WhatsApp:* ${config.whatsappNumber || 'Not set'}\n`;
-        
-        if (telegramBot?.botInfo) {
-            status += `🔹 *Bot:* @${telegramBot.botInfo.username}\n`;
-        }
-        
-        status += `\n*Commands:*\n`;
-        status += `• \`.telegram activate\` - Start bridge\n`;
-        status += `• \`.telegram stop\` - Stop bridge\n`;
-        status += `• \`.settoken TOKEN\` - Set Telegram token\n`;
-        status += `• \`.setwa NUMBER\` - Set WhatsApp number`;
+        let status = `📊 *Telegram Bridge*\n\n`;
+        status += `Active: ${isActive ? '✅' : '❌'}\n`;
+        status += `Token: ${config.token ? '✅' : '❌'}\n`;
+        status += `WhatsApp: ${config.whatsappNumber || 'Not set'}\n\n`;
+        status += `Commands:\n`;
+        status += `• .telegram on - Start\n`;
+        status += `• .telegram off - Stop\n`;
+        status += `• .settoken TOKEN\n`;
+        status += `• .setwa NUMBER`;
         
         await sock.sendMessage(chatId, { text: status });
         return;
     }
     
-    // Handle subcommands
     switch (subCommand) {
-        case 'activate':
-        case 'start':
         case 'on':
+        case 'start':
+        case 'activate':
             await startTelegramBot(sock, chatId);
             break;
             
-        case 'stop':
         case 'off':
+        case 'stop':
         case 'deactivate':
             await stopTelegramBot(sock, chatId);
             break;
             
         default:
             await sock.sendMessage(chatId, { 
-                text: '❌ Unknown command. Use:\n• `.telegram activate`\n• `.telegram stop`' 
+                text: 'Use: .telegram on / off' 
             });
     }
 }
@@ -183,7 +264,7 @@ async function telegramCommand(sock, chatId, message, args) {
 async function setTokenCommand(sock, chatId, message, token) {
     if (!token) {
         await sock.sendMessage(chatId, { 
-            text: '❌ Please provide your Telegram bot token.\nExample: `.settoken 123456:ABCdef`' 
+            text: '❌ Provide token: `.settoken 123456:ABCdef`' 
         });
         return;
     }
@@ -193,7 +274,7 @@ async function setTokenCommand(sock, chatId, message, token) {
     saveConfig(config);
     
     await sock.sendMessage(chatId, { 
-        text: '✅ Telegram bot token saved!' 
+        text: '✅ Token saved!' 
     });
 }
 
@@ -201,12 +282,11 @@ async function setTokenCommand(sock, chatId, message, token) {
 async function setWaCommand(sock, chatId, message, number) {
     if (!number) {
         await sock.sendMessage(chatId, { 
-            text: '❌ Please provide your WhatsApp number.\nExample: `.setwa 923247220362`' 
+            text: '❌ Provide number: `.setwa 923247220362`' 
         });
         return;
     }
     
-    // Clean number
     const cleanNumber = number.replace(/[^0-9]/g, '');
     
     const config = loadConfig();
@@ -214,7 +294,7 @@ async function setWaCommand(sock, chatId, message, number) {
     saveConfig(config);
     
     await sock.sendMessage(chatId, { 
-        text: `✅ WhatsApp number set to: ${cleanNumber}` 
+        text: `✅ WhatsApp set: ${cleanNumber}` 
     });
 }
 
