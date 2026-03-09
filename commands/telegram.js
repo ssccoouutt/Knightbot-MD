@@ -147,48 +147,92 @@ function convertTelegramToWhatsApp(text, entities) {
 async function downloadMedia(client, message) {
     try {
         if (message.media?.className === 'MessageMediaWebPage') {
+            log('DEBUG', 'Skipping webpage media (no downloadable content)', { messageId: message.id });
             return null;
         }
         
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
-        
-        if (!fs.existsSync(TEMP_DIR)) {
-            fs.mkdirSync(TEMP_DIR, { recursive: true });
+        // Add multiple retry attempts with increasing delays
+        let lastError = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_attempt_${attempt}`);
+                
+                if (!fs.existsSync(TEMP_DIR)) {
+                    fs.mkdirSync(TEMP_DIR, { recursive: true });
+                }
+                
+                log('DEBUG', `Download attempt ${attempt}/3`, { messageId: message.id });
+                
+                await client.downloadMedia(message, { 
+                    outputFile: tempFile,
+                    progressCallback: (received, total) => {
+                        if (received % 100000 === 0) { // Log every 100KB
+                            log('DEBUG', `Download progress: ${Math.round(received/1024)}KB/${Math.round(total/1024)}KB`, { messageId: message.id });
+                        }
+                    }
+                });
+                
+                // Check if file exists and has content
+                if (!fs.existsSync(tempFile)) {
+                    throw new Error('File not created');
+                }
+                
+                const stats = fs.statSync(tempFile);
+                if (stats.size === 0) {
+                    throw new Error('File is empty');
+                }
+                
+                const buffer = fs.readFileSync(tempFile);
+                fs.unlinkSync(tempFile);
+                
+                log('INFO', `✅ Media downloaded successfully on attempt ${attempt}`, { 
+                    messageId: message.id,
+                    size: stats.size,
+                    type: message.photo ? 'photo' : message.video ? 'video' : 'document'
+                });
+                
+                return {
+                    buffer,
+                    size: stats.size,
+                    mimeType: message.photo ? 'image/jpeg' : 
+                             message.video ? 'video/mp4' : 
+                             message.document?.mimeType || 'application/octet-stream'
+                };
+                
+            } catch (err) {
+                lastError = err;
+                log('WARN', `Download attempt ${attempt} failed`, { 
+                    messageId: message.id,
+                    error: err.message 
+                });
+                
+                // Clean up temp file if it exists
+                try {
+                    const tempFile = path.join(TEMP_DIR, `tg_${message.id}_attempt_${attempt}`);
+                    if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+                } catch (cleanupError) {}
+                
+                // Wait before retry (increasing delay)
+                if (attempt < 3) {
+                    const delay = attempt * 2000;
+                    log('DEBUG', `Waiting ${delay}ms before retry...`, { messageId: message.id });
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
         }
         
-        try {
-            await client.downloadMedia(message, { outputFile: tempFile });
-        } catch (downloadError) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            await client.downloadMedia(message, { outputFile: tempFile });
-        }
+        // All attempts failed
+        log('ERROR', '❌ ALL download attempts failed - media cannot be retrieved', { 
+            messageId: message.id,
+            lastError: lastError?.message 
+        });
+        return null;
         
-        if (!fs.existsSync(tempFile)) {
-            return null;
-        }
-        
-        const stats = fs.statSync(tempFile);
-        if (stats.size === 0) {
-            fs.unlinkSync(tempFile);
-            return null;
-        }
-        
-        const buffer = fs.readFileSync(tempFile);
-        fs.unlinkSync(tempFile);
-        return {
-            buffer,
-            size: stats.size,
-            mimeType: message.photo ? 'image/jpeg' : 
-                     message.video ? 'video/mp4' : 
-                     message.document?.mimeType || 'application/octet-stream'
-        };
     } catch (error) {
-        try {
-            const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-        } catch (cleanupError) {}
+        log('ERROR', 'Media download failed completely', { 
+            messageId: message.id,
+            error: error.message 
+        });
         return null;
     }
 }
@@ -219,13 +263,18 @@ async function sendToWhatsApp(messageData, targetType) {
         let failedTargets = [];
         
         // For media messages, we already have the buffer - reuse it for all targets
-        // NO NEED TO DOWNLOAD AGAIN FOR EACH GROUP
         const mediaBuffer = messageData.type === 'media' ? messageData.buffer : null;
         const mediaCaption = messageData.type === 'media' ? messageData.caption : null;
         const mediaFileName = messageData.type === 'media' ? messageData.fileName : null;
         const mediaMimeType = messageData.type === 'media' ? messageData.mimeType : null;
         const mediaType = messageData.type === 'media' ? messageData.mediaType : null;
         const mediaSize = messageData.type === 'media' ? messageData.size : null;
+        
+        // Verify media buffer exists for media messages
+        if (messageData.type === 'media' && !mediaBuffer) {
+            log('ERROR', '❌ Media message has no buffer - cannot send', { messageData });
+            return false;
+        }
         
         // Send to all targets sequentially with small delay
         for (let i = 0; i < targets.length; i++) {
@@ -481,9 +530,9 @@ async function startTelegramBot(sock, chatId) {
                     timestamp: Date.now()
                 };
                 
-                // Handle media if present - DOWNLOAD ONCE
+                // Handle media if present - MUST download successfully or we don't proceed
                 if (msg.media && msg.media.className !== 'MessageMediaWebPage') {
-                    log('DEBUG', 'Downloading media (ONCE)', { messageId: msg.id.toString() });
+                    log('DEBUG', '📥 Downloading media (MUST succeed)', { messageId: msg.id.toString() });
                     
                     const mediaResult = await downloadMedia(telegramClient, msg);
                     
@@ -523,18 +572,26 @@ async function startTelegramBot(sock, chatId) {
                             timestamp: Date.now()
                         };
                         
-                        log('INFO', 'Media downloaded once', { 
+                        log('INFO', '✅ Media downloaded successfully', { 
                             type: mediaType, 
                             size: mediaResult.size,
                             bufferSize: mediaResult.buffer.length
                         });
                     } else {
-                        // Media download failed, send as text only
-                        messageData = {
-                            type: 'text',
-                            content: formattedText + '\n\n[Media could not be downloaded]',
-                            timestamp: Date.now()
-                        };
+                        // CRITICAL: Media download failed - DO NOT PROCEED
+                        log('ERROR', '❌ Media download failed - message will NOT be forwarded', { 
+                            messageId: msg.id.toString() 
+                        });
+                        
+                        // Notify user that media couldn't be downloaded
+                        await telegramBot.telegram.sendMessage(
+                            parseInt(chatId),
+                            `❌ Failed to download media from Telegram. The message will NOT be forwarded to WhatsApp.`,
+                            {}
+                        );
+                        
+                        // Skip this message entirely
+                        return;
                     }
                 }
                 
@@ -551,7 +608,7 @@ async function startTelegramBot(sock, chatId) {
                     }
                 }
                 
-                // Create preview - WITHOUT markdown to avoid parsing issues
+                // Create preview
                 const previewText = formattedText.length > 100 ? 
                     formattedText.substring(0, 100) + '...' : 
                     formattedText || '[No text]';
@@ -559,7 +616,7 @@ async function startTelegramBot(sock, chatId) {
                 const fileSizeInfo = messageData.type === 'media' ? 
                     ` (${(messageData.size / 1024 / 1024).toFixed(2)}MB)` : '';
                 
-                // Simple plain text message without markdown to avoid parsing errors
+                // Simple plain text message
                 const confirmationMessage = 
                     `📨 New Message\n\n` +
                     `Preview: ${previewText}${fileSizeInfo}\n\n` +
@@ -567,7 +624,7 @@ async function startTelegramBot(sock, chatId) {
                 
                 log('INFO', 'Sending confirmation', { chatId });
                 
-                // Send confirmation back to the same chat - WITHOUT parse_mode to avoid entity parsing errors
+                // Send confirmation back to the same chat
                 await telegramBot.telegram.sendMessage(
                     parseInt(chatId),
                     confirmationMessage,
