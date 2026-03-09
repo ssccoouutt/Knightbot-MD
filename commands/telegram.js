@@ -86,9 +86,9 @@ async function downloadMedia(client, message) {
 function cleanWhitespace(text) {
     if (!text) return text;
     
-    // Don't trim the entire text - preserve trailing whitespace
-    // Only collapse multiple spaces/tabs to single space
-    text = text.replace(/[ \t]+/g, ' ');
+    // Don't trim the entire text - preserve leading/trailing whitespace
+    // Only collapse multiple spaces/tabs to single space (but preserve intentional spaces)
+    text = text.replace(/[ \t]{2,}/g, ' ');
     
     // Reduce multiple newlines to max 2
     text = text.replace(/\n{3,}/g, '\n\n');
@@ -98,14 +98,14 @@ function cleanWhitespace(text) {
 
 function wrapLines(content, prefix, suffix) {
     // Only wraps non-empty lines, preserves empty lines
-    // Preserves original whitespace within lines
+    // Preserves original whitespace within lines (don't trim)
     
     const lines = content.split('\n');
     const wrappedLines = [];
     
     for (const line of lines) {
         if (line.trim()) {
-            // Only wrap non-empty lines, but preserve original line content
+            // Only wrap non-empty lines, but preserve original line content including spaces
             wrappedLines.push(prefix + line + suffix);
         } else {
             // Preserve empty lines
@@ -114,6 +114,87 @@ function wrapLines(content, prefix, suffix) {
     }
     
     return wrappedLines.join('\n');
+}
+
+function getEntityPriority(entityType) {
+    // Higher number = higher priority (processed last so it wraps others)
+    switch (entityType) {
+        case 'MessageEntityBold':
+            return 2;
+        case 'MessageEntityItalic':
+            return 2;
+        case 'MessageEntityStrike':
+            return 2;
+        case 'MessageEntityCode':
+        case 'MessageEntityPre':
+            return 3;
+        case 'MessageEntityTextUrl':
+        case 'MessageEntityUrl':
+            return 1;
+        case 'MessageEntityBlockquote':
+            return 0;
+        default:
+            return 0;
+    }
+}
+
+function combineFormatting(existingFormatted, newPrefix, newSuffix) {
+    // Combine existing formatting with new formatting
+    // For WhatsApp, we need to nest them properly
+    
+    // Remove existing prefix/suffix if they exist
+    let content = existingFormatted;
+    
+    // Check if already has bold
+    const hasBold = content.startsWith('*') && content.endsWith('*');
+    const hasItalic = content.startsWith('_') && content.endsWith('_');
+    const hasStrike = content.startsWith('~') && content.endsWith('~');
+    
+    if (hasBold) {
+        content = content.substring(1, content.length - 1);
+    }
+    if (hasItalic) {
+        content = content.substring(1, content.length - 1);
+    }
+    if (hasStrike) {
+        content = content.substring(1, content.length - 1);
+    }
+    
+    // Apply new formatting
+    let result = content;
+    
+    // Apply in correct order for WhatsApp (bold+italic = *_text_*)
+    if (newPrefix === '*' && newSuffix === '*') {
+        // Adding bold
+        if (hasItalic) {
+            result = '*' + result + '*'; // Will be combined as *_text_*
+        } else {
+            result = '*' + result + '*';
+        }
+    } else if (newPrefix === '_' && newSuffix === '_') {
+        // Adding italic
+        if (hasBold) {
+            result = '_' + result + '_'; // Will be combined as *_text_*
+        } else {
+            result = '_' + result + '_';
+        }
+    } else if (newPrefix === '~' && newSuffix === '~') {
+        // Adding strikethrough
+        result = '~' + result + '~';
+    }
+    
+    // Re-apply any existing formatting that wasn't overwritten
+    if (hasBold && newPrefix !== '*') {
+        result = '*' + result + '*';
+    }
+    if (hasItalic && newPrefix !== '_') {
+        result = '_' + result + '_';
+    }
+    if (hasStrike && newPrefix !== '~') {
+        result = '~' + result + '~';
+    }
+    
+    return result;
 }
 
 function convertTelegramToWhatsApp(text, entities) {
@@ -145,80 +226,100 @@ function convertTelegramToWhatsApp(text, entities) {
     
     // If we have entities, use them for accurate formatting
     if (entities && entities.length > 0) {
-        // Track which entities we've processed to avoid duplicates
-        const processedEntities = new Set();
-        
-        // Sort entities by offset (ascending) to process from start to end
-        const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
-        
-        // Build the result piece by piece using the clean text
-        let result = '';
-        let lastIndex = 0;
-        
-        for (const entity of sortedEntities) {
-            // Skip if we've already processed this entity (for overlapping entities)
-            const entityKey = `${entity.className}_${entity.offset}_${entity.length}`;
-            if (processedEntities.has(entityKey)) {
-                continue;
+        // First, identify blockquote ranges to skip formatting inside them
+        const blockquoteRanges = [];
+        for (const entity of entities) {
+            if (entity.className === 'MessageEntityBlockquote') {
+                blockquoteRanges.push({
+                    start: entity.offset,
+                    end: entity.offset + entity.length
+                });
             }
-            processedEntities.add(entityKey);
-            
+        }
+        
+        // Sort entities by priority (higher priority last) and then by offset
+        const sortedEntities = [...entities].sort((a, b) => {
+            const priorityA = getEntityPriority(a.className);
+            const priorityB = getEntityPriority(b.className);
+            if (priorityA !== priorityB) {
+                return priorityA - priorityB;
+            }
+            return a.offset - b.offset;
+        });
+        
+        // Create a map to store formatted content at each position range
+        const formattedMap = new Map();
+        
+        // First pass: apply all formatting to their respective ranges
+        for (const entity of sortedEntities) {
             const start = entity.offset;
             const end = start + entity.length;
             
-            // Add any text before this entity (from clean text)
-            if (start > lastIndex) {
-                result += cleanText.substring(lastIndex, start);
+            // Check if this entity is inside a blockquote
+            const isInBlockquote = blockquoteRanges.some(range => 
+                start >= range.start && end <= range.end
+            );
+            
+            // Skip formatting entities that are inside blockquotes
+            if (isInBlockquote && entity.className !== 'MessageEntityBlockquote') {
+                log('DEBUG', 'Skipping entity inside blockquote', {
+                    type: entity.className,
+                    start,
+                    end
+                });
+                continue;
             }
             
-            // Get the content for this entity from clean text
+            const rangeKey = `${start}_${end}`;
             const content = cleanText.substring(start, end);
             
-            log('DEBUG', 'Processing entity', {
+            log('DEBUG', 'Processing entity for combination', {
                 type: entity.className,
                 start,
                 end,
                 content
             });
             
-            // Apply WhatsApp formatting based on entity type
             let formattedContent = content;
             
+            // Get existing formatting for this range if any
+            if (formattedMap.has(rangeKey)) {
+                formattedContent = formattedMap.get(rangeKey);
+            }
+            
+            // Apply new formatting based on entity type
             switch (entity.className) {
                 case 'MessageEntityBold':
-                    // Use line-by-line wrapping
-                    formattedContent = wrapLines(content, '*', '*');
-                    log('INFO', 'Applied BOLD formatting', { 
-                        original: content, 
-                        formatted: formattedContent 
+                    formattedContent = combineFormatting(formattedContent, '*', '*');
+                    log('INFO', 'Applied/Combined BOLD formatting', { 
+                        content,
+                        result: formattedContent
                     });
                     break;
                     
                 case 'MessageEntityItalic':
-                    // Use line-by-line wrapping
-                    formattedContent = wrapLines(content, '_', '_');
-                    log('INFO', 'Applied ITALIC formatting', { 
-                        original: content, 
-                        formatted: formattedContent 
+                    formattedContent = combineFormatting(formattedContent, '_', '_');
+                    log('INFO', 'Applied/Combined ITALIC formatting', { 
+                        content,
+                        result: formattedContent
                     });
                     break;
                     
                 case 'MessageEntityStrike':
-                    // Use line-by-line wrapping
-                    formattedContent = wrapLines(content, '~', '~');
-                    log('INFO', 'Applied STRIKETHROUGH formatting', { 
-                        original: content, 
-                        formatted: formattedContent 
+                    formattedContent = combineFormatting(formattedContent, '~', '~');
+                    log('INFO', 'Applied/Combined STRIKETHROUGH formatting', { 
+                        content,
+                        result: formattedContent
                     });
                     break;
                     
                 case 'MessageEntityCode':
                 case 'MessageEntityPre':
-                    // For code blocks, preserve newlines but wrap entire block
+                    // Code blocks override other formatting
                     formattedContent = '```' + content + '```';
-                    log('INFO', 'Applied CODE formatting', { 
-                        original: content, 
-                        formatted: formattedContent 
+                    log('INFO', 'Applied CODE formatting (overrides others)', { 
+                        content,
+                        result: formattedContent
                     });
                     break;
                     
@@ -243,12 +344,33 @@ function convertTelegramToWhatsApp(text, entities) {
                     break;
             }
             
-            // Add the formatted content
-            result += formattedContent;
-            lastIndex = end;
+            formattedMap.set(rangeKey, formattedContent);
         }
         
-        // Add any remaining text after the last entity
+        // Second pass: build the final result in order
+        let result = '';
+        let lastIndex = 0;
+        
+        // Get all unique ranges in order
+        const sortedRanges = [...formattedMap.keys()]
+            .map(key => {
+                const [start, end] = key.split('_').map(Number);
+                return { start, end, key };
+            })
+            .sort((a, b) => a.start - b.start);
+        
+        for (const range of sortedRanges) {
+            // Add text before this range
+            if (range.start > lastIndex) {
+                result += cleanText.substring(lastIndex, range.start);
+            }
+            
+            // Add formatted content for this range
+            result += formattedMap.get(range.key);
+            lastIndex = range.end;
+        }
+        
+        // Add any remaining text after the last range
         if (lastIndex < cleanText.length) {
             result += cleanText.substring(lastIndex);
         }
