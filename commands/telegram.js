@@ -8,6 +8,7 @@ const CONFIG_FILE = path.join(process.cwd(), 'data', 'telegram_bridge.json');
 const TEMP_DIR = path.join(process.cwd(), 'temp');
 let telegramClient = null;
 let isActive = false;
+let connectionReady = false;
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
@@ -57,8 +58,34 @@ async function downloadMedia(client, message) {
             return null;
         }
         
+        // Add small delay to ensure connection is stable
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
         const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
-        await client.downloadMedia(message, { outputFile: tempFile });
+        
+        // Ensure temp directory exists
+        if (!fs.existsSync(TEMP_DIR)) {
+            fs.mkdirSync(TEMP_DIR, { recursive: true });
+        }
+        
+        // Download with explicit error handling
+        try {
+            await client.downloadMedia(message, { 
+                outputFile: tempFile,
+                progressCallback: (received, total) => {
+                    log('DEBUG', `Download progress: ${received}/${total}`, { messageId: message.id });
+                }
+            });
+        } catch (downloadError) {
+            log('ERROR', 'Download attempt failed, retrying...', { 
+                messageId: message.id,
+                error: downloadError.message 
+            });
+            
+            // Wait and retry once
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await client.downloadMedia(message, { outputFile: tempFile });
+        }
         
         // Check if file exists and has content
         if (!fs.existsSync(tempFile)) {
@@ -97,37 +124,39 @@ async function downloadMedia(client, message) {
     }
 }
 
+// EXACT Python cleanup function 1: Clean whitespace
 function cleanWhitespace(text) {
     if (!text) return text;
     
-    // Only collapse multiple spaces/tabs to single space
-    // But preserve intentional spaces and trailing/leading whitespace
-    text = text.replace(/[ \t]{2,}/g, ' ');
+    // Python: re.sub(r'[ \t]+', ' ', text) - Replaces multiple spaces/tabs with single space
+    text = text.replace(/[ \t]+/g, ' ');
     
-    // Reduce multiple newlines to max 2
+    // Python: re.sub(r'\n{3,}', '\n\n', text) - Reduces multiple newlines to max 2
     text = text.replace(/\n{3,}/g, '\n\n');
     
-    // DO NOT trim - preserve leading/trailing whitespace
-    return text;
+    // Python: text.strip() - Final strip removes leading/trailing whitespace
+    return text.trim();
 }
 
+// EXACT Python line wrapping function
 function wrapLines(content, prefix, suffix) {
-    // Only wraps non-empty lines, preserves empty lines
-    // Preserves original whitespace within lines (don't trim)
-    
+    // Python: lines = content.split('\n')
     const lines = content.split('\n');
     const wrappedLines = [];
     
+    // Python: for line in lines:
     for (const line of lines) {
+        // Python: if line.strip(): - Only wrap non-empty lines
         if (line.trim()) {
-            // Only wrap non-empty lines, but preserve original line content including spaces
-            wrappedLines.push(prefix + line + suffix);
+            // Python: f"{prefix}{line.strip()}{suffix}" - Wrap trimmed line
+            wrappedLines.push(prefix + line.trim() + suffix);
         } else {
-            // Preserve empty lines
-            wrappedLines.push(line); // Keep original empty line (may contain spaces)
+            // Python: Preserve empty lines
+            wrappedLines.push('');
         }
     }
     
+    // Python: return '\n'.join(wrapped_lines)
     return wrappedLines.join('\n');
 }
 
@@ -400,7 +429,7 @@ function convertTelegramToWhatsApp(text, entities) {
             result += cleanText.substring(lastIndex);
         }
         
-        // Apply whitespace cleanup (preserve trailing/leading whitespace)
+        // Apply EXACT Python cleanup function
         const cleanedResult = cleanWhitespace(result);
         
         log('INFO', 'Final formatted text', {
@@ -422,7 +451,7 @@ function convertTelegramToWhatsApp(text, entities) {
     formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');        // Strikethrough
     formatted = formatted.replace(/`(.*?)`/g, '```$1```');      // Code
     
-    // Apply whitespace cleanup (preserve trailing/leading)
+    // Apply EXACT Python cleanup function
     formatted = cleanWhitespace(formatted);
     
     log('INFO', 'Final formatted text (regex method)', {
@@ -458,11 +487,17 @@ async function startTelegramBot(sock, chatId) {
         log('INFO', 'WhatsApp JID configured', { whatsappJid });
         
         telegramClient = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
-            connectionRetries: 5
+            connectionRetries: 5,
+            downloadRetries: 3
         });
         
         await telegramClient.start({ botAuthToken: config.botToken });
         log('INFO', 'Telegram client connected successfully');
+        
+        // Wait a moment for connection to stabilize
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        connectionReady = true;
+        log('INFO', 'Telegram connection ready for media downloads');
         
         async function messageHandler(event) {
             try {
@@ -518,8 +553,18 @@ async function startTelegramBot(sock, chatId) {
                     return;
                 }
                 
+                // For media messages, ensure connection is ready
+                if (!connectionReady) {
+                    log('WARN', 'Connection not ready yet, waiting...');
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+                
                 // MEDIA WITH CAPTION
                 log('DEBUG', 'Downloading media', { messageId: msg.id });
+                
+                // Add small delay before downloading to ensure connection
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
                 const buffer = await downloadMedia(telegramClient, msg);
                 
                 if (!buffer || buffer.length === 0) {
@@ -647,6 +692,7 @@ async function telegramCommand(sock, chatId, message, args) {
         case 'off': case 'stop':
             if (telegramClient) await telegramClient.disconnect();
             isActive = false;
+            connectionReady = false;
             config.active = false;
             saveConfig(config);
             await sock.sendMessage(chatId, { text: '🔴 Stopped' });
