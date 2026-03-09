@@ -32,28 +32,25 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// EXACT PATTERN FROM YOUR PYTHON SCRIPT
+// EXACT pattern from your Python script
 function clean_whatsapp_text(text, entities) {
     if (!text) return text;
     
-    // Build plain text by extracting content without markdown
-    let result = [];
-    let lastPos = 0;
-    
     if (entities && entities.length > 0) {
+        let result = [];
+        let lastPos = 0;
+        
         const sorted = [...entities].sort((a, b) => a.offset - b.offset);
         
         for (const entity of sorted) {
-            // Add text before entity
             if (entity.offset > lastPos) {
                 result.push(text.substring(lastPos, entity.offset));
             }
             
-            // Get the content WITHOUT the markdown (just the inner text)
-            // For **Hi**, content is "Hi" (without the **)
-            const content = text.substring(entity.offset + 2, entity.offset + entity.length - 2);
+            // Get plain text (remove markdown chars)
+            const content = text.substring(entity.offset, entity.offset + entity.length)
+                .replace(/[*_~`]/g, '');
             
-            // Apply WhatsApp formatting exactly like Python
             if (entity.className === 'MessageEntityBold') {
                 result.push(`*${content}*`);
             }
@@ -73,16 +70,14 @@ function clean_whatsapp_text(text, entities) {
             lastPos = entity.offset + entity.length;
         }
         
-        // Add remaining text
         if (lastPos < text.length) {
             result.push(text.substring(lastPos));
         }
-    } else {
-        // No entities - return as is
-        return text;
+        
+        return result.join('');
     }
     
-    return result.join('');
+    return text;
 }
 
 async function downloadMedia(client, message) {
@@ -129,7 +124,6 @@ async function startTelegramBot(sock, chatId) {
                 const msg = event.message;
                 if (!msg) return;
                 
-                // Skip commands
                 if (msg.text && msg.text.startsWith('/')) return;
                 
                 const text = msg.text || '';
@@ -144,13 +138,11 @@ async function startTelegramBot(sock, chatId) {
                 const formatted = clean_whatsapp_text(text, entities);
                 console.log(`✨ Formatted: ${formatted}`);
                 
-                // TEXT ONLY
                 if (text && !msg.media) {
                     await sock.sendMessage(whatsappJid, { text: formatted });
                     return;
                 }
                 
-                // MEDIA handling
                 const buffer = await downloadMedia(telegramClient, msg);
                 if (!buffer) return;
                 
