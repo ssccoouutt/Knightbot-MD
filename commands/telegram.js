@@ -53,9 +53,9 @@ async function initTelegramClient(sessionString) {
 async function startTelegramBot(sock, chatId) {
     const config = loadConfig();
     
-    if (!config.sessionString) {
+    if (!config.token && !config.sessionString) {
         await sock.sendMessage(chatId, { 
-            text: '❌ Set session string first: `.setsession YOUR_SESSION_STRING`' 
+            text: '❌ Set Telegram bot token or session string first:\n`.settoken TOKEN`\n`.setsession SESSION_STRING`' 
         });
         return false;
     }
@@ -78,62 +78,81 @@ async function startTelegramBot(sock, chatId) {
         
         await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Initialize Telegram client
-        telegramClient = await initTelegramClient(config.sessionString);
-        
-        // Set up message handler - FIXED VERSION
-        async function messageHandler(event) {
-            try {
-                const message = event.message;
-                
-                // Skip if no message
-                if (!message) return;
-                
-                // Get message text
-                const text = message.text || message.message || '';
-                
-                // Skip commands and empty messages
-                if (text.startsWith('/') || !text.trim()) return;
-                
-                console.log(`📨 Received Telegram message: ${text.substring(0, 50)}...`);
-                
-                const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
-                    config.whatsappNumber :
-                    `${config.whatsappNumber}@s.whatsapp.net`;
-                
-                // Send to WhatsApp
-                await sock.sendMessage(whatsappJid, { 
-                    text: text,
-                    contextInfo: {
-                        forwardingScore: 1,
-                        isForwarded: true,
-                        forwardedNewsletterMessageInfo: {
-                            newsletterJid: '120363161513685998@newsletter',
-                            newsletterName: 'Telegram Bridge',
-                            serverMessageId: -1
-                        }
-                    }
-                });
-                
-                console.log(`✅ Forwarded to WhatsApp: ${text.substring(0, 30)}...`);
-                
-            } catch (err) {
-                console.error('Error in message handler:', err);
-            }
+        // Use BOT TOKEN for receiving messages
+        if (config.token) {
+            telegramBot = new Telegraf(config.token);
+            
+            telegramBot.on('message', async (ctx) => {
+                try {
+                    const message = ctx.message;
+                    
+                    // Skip commands
+                    if (message.text && message.text.startsWith('/')) return;
+                    
+                    const text = message.text || message.caption || '';
+                    if (!text.trim()) return;
+                    
+                    console.log(`📨 Received from Telegram bot: ${text.substring(0, 50)}...`);
+                    
+                    const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
+                        config.whatsappNumber :
+                        `${config.whatsappNumber}@s.whatsapp.net`;
+                    
+                    await sock.sendMessage(whatsappJid, { 
+                        text: `📨 *Telegram Bot:*\n\n${text}`
+                    });
+                    
+                    console.log(`✅ Forwarded to WhatsApp`);
+                    
+                } catch (err) {
+                    console.error('Error in bot message handler:', err);
+                }
+            });
+            
+            await telegramBot.launch();
+            console.log('✅ Telegram bot started');
+            
+            await sock.sendMessage(chatId, { 
+                text: `✅ *Telegram Bot Active*\n🤖 Using bot token\n📱 Forwarding to: ${config.whatsappNumber}` 
+            });
         }
         
-        // Add event handler - CORRECT SYNTAX
-        telegramClient.addEventHandler(messageHandler, new NewMessage({}));
-        
-        console.log('✅ Event handler registered - waiting for messages...');
+        // Use SESSION STRING for 2GB file downloads (optional)
+        if (config.sessionString) {
+            telegramClient = await initTelegramClient(config.sessionString);
+            
+            async function messageHandler(event) {
+                try {
+                    const message = event.message;
+                    if (!message || !message.text) return;
+                    
+                    const text = message.text;
+                    if (text.startsWith('/') || !text.trim()) return;
+                    
+                    console.log(`📨 Received from Telegram user: ${text.substring(0, 50)}...`);
+                    
+                    const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
+                        config.whatsappNumber :
+                        `${config.whatsappNumber}@s.whatsapp.net`;
+                    
+                    await sock.sendMessage(whatsappJid, { 
+                        text: `📨 *Telegram User:*\n\n${text}`
+                    });
+                    
+                    console.log(`✅ Forwarded to WhatsApp`);
+                    
+                } catch (err) {
+                    console.error('Error in user message handler:', err);
+                }
+            }
+            
+            telegramClient.addEventHandler(messageHandler, new NewMessage({}));
+            console.log('✅ Telegram user client started');
+        }
         
         isActive = true;
         config.active = true;
         saveConfig(config);
-        
-        await sock.sendMessage(chatId, { 
-            text: `✅ *Telegram Bridge Active*\n📱 Forwarding to: ${config.whatsappNumber}\n💬 Now listening for messages...` 
-        });
         
         return true;
         
@@ -154,11 +173,13 @@ async function telegramCommand(sock, chatId, message, args) {
         const config = loadConfig();
         let status = `📊 *Telegram Bridge*\n\n`;
         status += `Active: ${isActive ? '✅' : '❌'}\n`;
-        status += `Session: ${config.sessionString ? '✅' : '❌'}\n`;
+        status += `Bot Token: ${config.token ? '✅' : '❌'}\n`;
+        status += `Session: ${config.sessionString ? '✅ (2GB support)' : '❌'}\n`;
         status += `WhatsApp: ${config.whatsappNumber || 'Not set'}\n\n`;
         status += `Commands:\n`;
         status += `• .telegram on - Start\n`;
         status += `• .telegram off - Stop\n`;
+        status += `• .settoken TOKEN\n`;
         status += `• .setsession SESSION_STRING\n`;
         status += `• .setwa NUMBER`;
         
@@ -192,6 +213,19 @@ async function telegramCommand(sock, chatId, message, args) {
     }
 }
 
+async function setTokenCommand(sock, chatId, message, token) {
+    if (!token) {
+        await sock.sendMessage(chatId, { text: '❌ Provide token: `.settoken 123456:ABCdef`' });
+        return;
+    }
+    
+    const config = loadConfig();
+    config.token = token;
+    saveConfig(config);
+    
+    await sock.sendMessage(chatId, { text: '✅ Bot token saved!' });
+}
+
 async function setSessionCommand(sock, chatId, message, sessionString) {
     if (!sessionString) {
         await sock.sendMessage(chatId, { text: '❌ Provide session string: `.setsession YOUR_SESSION_STRING`' });
@@ -222,6 +256,7 @@ async function setWaCommand(sock, chatId, message, number) {
 
 module.exports = {
     telegramCommand,
+    setTokenCommand,
     setSessionCommand,
     setWaCommand
 };
