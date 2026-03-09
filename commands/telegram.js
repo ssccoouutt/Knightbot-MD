@@ -202,12 +202,15 @@ async function sendToWhatsApp(sock, messageData, targetType) {
                 return false;
         }
         
+        log('INFO', `Sending to ${targets.length} targets`, { targetType });
+        
         for (const target of targets) {
             const jid = target.includes('@') ? target : 
                        targetType === 'own' ? `${target}@s.whatsapp.net` : `${target}@g.us`;
             
             if (messageData.type === 'text') {
                 await sock.sendMessage(jid, { text: messageData.content });
+                log('INFO', 'Text sent', { target: jid });
             } else if (messageData.type === 'media') {
                 const fileSizeMB = messageData.size / (1024 * 1024);
                 
@@ -219,6 +222,7 @@ async function sendToWhatsApp(sock, messageData, targetType) {
                         caption: messageData.caption,
                         mimetype: messageData.mimeType
                     });
+                    log('INFO', 'Large file sent as document', { target: jid, sizeMB });
                 } else {
                     if (messageData.mediaType === 'photo') {
                         await sock.sendMessage(jid, {
@@ -237,26 +241,14 @@ async function sendToWhatsApp(sock, messageData, targetType) {
                             caption: messageData.caption,
                             mimetype: messageData.mimeType
                         });
-                    } else if (messageData.mediaType === 'audio') {
-                        await sock.sendMessage(jid, {
-                            audio: messageData.buffer,
-                            caption: messageData.caption
-                        });
-                    } else if (messageData.mediaType === 'voice') {
-                        await sock.sendMessage(jid, {
-                            audio: messageData.buffer,
-                            ptt: true
-                        });
-                    } else if (messageData.mediaType === 'sticker') {
-                        await sock.sendMessage(jid, {
-                            sticker: messageData.buffer
-                        });
                     }
+                    log('INFO', `${messageData.mediaType} sent`, { target: jid });
                 }
             }
         }
         return true;
     } catch (error) {
+        log('ERROR', 'Send failed', { error: error.message });
         return false;
     }
 }
@@ -275,6 +267,7 @@ function initTelegramBot() {
             `• ❌ *Cancel* - Don't forward`;
         
         ctx.reply(helpMessage, { parse_mode: 'Markdown' });
+        log('INFO', 'Start command responded', { chatId: ctx.chat.id });
     });
     
     telegramBot.on('callback_query', async (ctx) => {
@@ -350,35 +343,59 @@ async function startTelegramBot(sock, chatId) {
         await new Promise(resolve => setTimeout(resolve, 2000));
         connectionReady = true;
         
+        // FIX: Add event handler for all messages
         async function messageHandler(event) {
             try {
                 const msg = event.message;
-                if (!msg) return;
-                
-                // Get sender ID
-                let senderId = null;
-                if (msg.fromId) {
-                    if (msg.fromId.userId) senderId = msg.fromId.userId;
-                    else if (msg.fromId.value) senderId = msg.fromId.value;
-                    else senderId = msg.fromId.toString();
+                if (!msg) {
+                    log('DEBUG', 'Empty message received');
+                    return;
                 }
                 
-                if (!senderId) return;
+                // Get sender ID properly
+                let senderId = null;
+                if (msg.fromId) {
+                    if (msg.fromId.userId) {
+                        senderId = msg.fromId.userId;
+                    } else if (msg.fromId.value) {
+                        senderId = msg.fromId.value;
+                    } else if (msg.fromId.className === 'PeerUser') {
+                        senderId = msg.fromId.userId;
+                    } else {
+                        senderId = msg.fromId.toString();
+                    }
+                }
+                
+                if (!senderId) {
+                    log('DEBUG', 'Could not determine sender', { messageId: msg.id });
+                    return;
+                }
                 
                 // Skip messages from bot itself
-                if (senderId.toString() === '8717510346') return;
+                if (senderId.toString() === '8717510346') {
+                    log('DEBUG', 'Skipping bot message');
+                    return;
+                }
                 
-                log('INFO', 'New message', {
+                log('INFO', '📨 NEW MESSAGE RECEIVED', {
                     messageId: msg.id,
                     senderId,
-                    hasMedia: !!msg.media
+                    hasText: !!msg.text,
+                    text: msg.text ? msg.text.substring(0, 50) : 'none',
+                    hasMedia: !!msg.media,
+                    mediaType: msg.media?.className
                 });
                 
                 // Skip commands
-                if (msg.text && msg.text.startsWith('/')) return;
+                if (msg.text && msg.text.startsWith('/')) {
+                    log('DEBUG', 'Skipping command');
+                    return;
+                }
                 
-                const text = msg.text || '';
+                const text = msg.text || msg.caption || '';
                 const entities = msg.entities || [];
+                
+                log('DEBUG', 'Converting text', { textLength: text.length });
                 const formattedText = convertTelegramToWhatsApp(text, entities);
                 
                 let messageData = {
@@ -387,7 +404,10 @@ async function startTelegramBot(sock, chatId) {
                     timestamp: Date.now()
                 };
                 
-                if (msg.media) {
+                // Handle media if present
+                if (msg.media && msg.media.className !== 'MessageMediaWebPage') {
+                    log('DEBUG', 'Downloading media', { messageId: msg.id });
+                    
                     const mediaResult = await downloadMedia(telegramClient, msg);
                     
                     if (mediaResult) {
@@ -402,8 +422,8 @@ async function startTelegramBot(sock, chatId) {
                             fileName = `video_${msg.id}.mp4`;
                         } else if (msg.document) {
                             mediaType = 'document';
-                            fileName = msg.document.attributes
-                                .find(a => a.className === 'DocumentAttributeFilename')?.fileName || `file_${msg.id}.bin`;
+                            const attr = msg.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
+                            fileName = attr?.fileName || `file_${msg.id}.bin`;
                         }
                         
                         messageData = {
@@ -416,27 +436,44 @@ async function startTelegramBot(sock, chatId) {
                             caption: formattedText,
                             timestamp: Date.now()
                         };
+                        
+                        log('INFO', 'Media downloaded', { 
+                            type: mediaType, 
+                            size: mediaResult.size 
+                        });
                     }
                 }
                 
+                // Store in pending messages
                 const pendingKey = `${senderId}_${msg.id}`;
                 pendingMessages.set(pendingKey, messageData);
+                log('INFO', 'Message stored in pending', { pendingKey });
                 
                 // Cleanup old messages
                 const now = Date.now();
                 for (const [key, data] of pendingMessages.entries()) {
-                    if (now - data.timestamp > 300000) pendingMessages.delete(key);
+                    if (now - data.timestamp > 300000) {
+                        pendingMessages.delete(key);
+                        log('DEBUG', 'Cleaned up expired message', { key });
+                    }
                 }
                 
+                // Create preview
                 const previewText = formattedText.length > 100 ? 
                     formattedText.substring(0, 100) + '...' : 
-                    formattedText;
+                    formattedText || '[No text]';
+                
+                const fileSizeInfo = messageData.type === 'media' ? 
+                    `\nSize: ${(messageData.size / 1024 / 1024).toFixed(2)}MB` : '';
                 
                 const confirmationMessage = 
-                    `📨 *New message*\n\n` +
-                    `Preview: ${previewText}\n\n` +
+                    `📨 *New Message*\n\n` +
+                    `Preview: ${previewText}${fileSizeInfo}\n\n` +
                     `Forward to?`;
                 
+                log('INFO', 'Sending confirmation', { senderId });
+                
+                // Send confirmation
                 await telegramBot.telegram.sendMessage(
                     senderId,
                     confirmationMessage,
@@ -456,18 +493,31 @@ async function startTelegramBot(sock, chatId) {
                     }
                 );
                 
+                log('INFO', '✅ Confirmation sent', { 
+                    senderId, 
+                    messageId: msg.id,
+                    hasMedia: !!msg.media 
+                });
+                
             } catch (err) {
-                log('ERROR', 'Handler error', { error: err.message });
+                log('ERROR', 'Message handler error', { 
+                    error: err.message,
+                    stack: err.stack 
+                });
             }
         }
         
+        // Add event handler
         telegramClient.addEventHandler(messageHandler, new NewMessage({}));
+        log('INFO', '✅ Message handler registered - ready to receive messages');
+        
         isActive = true;
         
-        await sock.sendMessage(chatId, { text: '✅ Bridge active' });
+        await sock.sendMessage(chatId, { text: '✅ Bridge active - Send messages to the bot to forward to WhatsApp' });
         return true;
         
     } catch (error) {
+        log('ERROR', 'Failed to start', { error: error.message });
         await sock.sendMessage(chatId, { text: '❌ Failed to start' });
         return false;
     }
@@ -488,7 +538,10 @@ async function telegramCommand(sock, chatId, message, args) {
             await startTelegramBot(sock, chatId);
             break;
         case 'off': case 'stop':
-            if (telegramClient) await telegramClient.disconnect();
+            if (telegramClient) {
+                await telegramClient.disconnect();
+                telegramClient = null;
+            }
             if (telegramBot) {
                 telegramBot.stop();
                 telegramBot = null;
@@ -497,6 +550,7 @@ async function telegramCommand(sock, chatId, message, args) {
             connectionReady = false;
             pendingMessages.clear();
             await sock.sendMessage(chatId, { text: '🔴 Stopped' });
+            log('INFO', 'Bridge stopped');
             break;
     }
 }
