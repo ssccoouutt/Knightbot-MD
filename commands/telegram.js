@@ -32,69 +32,86 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// Convert Telegram formatting to WhatsApp style
-function formatForWhatsApp(text, entities) {
+// ===== EXACT PATTERN FROM YOUR PYTHON SCRIPT =====
+function clean_whatsapp_text(text, entities) {
     if (!text) return text;
     
     let formatted = text;
-    const adjustments = [];
     
-    // Sort entities in reverse order to avoid offset issues
-    const sorted = [...(entities || [])].sort((a, b) => b.offset - a.offset);
-    
-    for (const entity of sorted) {
-        const start = entity.offset;
-        const end = start + entity.length;
-        const content = text.substring(start, end);
+    if (entities && entities.length > 0) {
+        // Sort entities in reverse order
+        const sorted = [...entities].sort((a, b) => b.offset - a.offset);
         
-        switch (entity.className) {
-            case 'MessageEntityBold':
-                adjustments.push({ start, end, replacement: `*${content}*` });
-                break;
-            case 'MessageEntityItalic':
-                adjustments.push({ start, end, replacement: `_${content}_` });
-                break;
-            case 'MessageEntityStrike':
-                adjustments.push({ start, end, replacement: `~${content}~` });
-                break;
-            case 'MessageEntityCode':
-            case 'MessageEntityPre':
-                adjustments.push({ start, end, replacement: `\`\`\`${content}\`\`\`` });
-                break;
-            case 'MessageEntityUnderline':
-                // WhatsApp doesn't have underline, use bold as fallback
-                adjustments.push({ start, end, replacement: `*${content}*` });
-                break;
-            case 'MessageEntitySpoiler':
-                // No spoiler in WhatsApp, send as is
-                break;
+        for (const entity of sorted) {
+            const start = entity.offset;
+            const end = start + entity.length;
+            const content = text.substring(start, end);
+            
+            // Exactly like your Python script's entity_types mapping
+            const entityTypes = {
+                'MessageEntityBold': ['*', '*'],
+                'MessageEntityItalic': ['_', '_'],
+                'MessageEntityStrike': ['~', '~'],
+                'MessageEntityCode': ['```', '```'],
+                'MessageEntityPre': ['```\n', '\n```']
+            };
+            
+            const type = entity.className;
+            if (entityTypes[type]) {
+                const [prefix, suffix] = entityTypes[type];
+                
+                // Process line by line like Python script
+                const lines = content.split('\n');
+                const wrappedLines = [];
+                
+                for (const line of lines) {
+                    if (line.trim()) {
+                        wrappedLines.push(`${prefix}${line.trim()}${suffix}`);
+                    } else {
+                        wrappedLines.push('');
+                    }
+                }
+                
+                const replacement = wrappedLines.join('\n');
+                formatted = formatted.substring(0, start) + replacement + formatted.substring(end);
+            }
         }
+    } else {
+        // Fallback regex processing like Python script
+        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');  // bold
+        formatted = formatted.replace(/__(.*?)__/g, '_$1_');      // italic
+        formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');      // strikethrough
+        formatted = formatted.replace(/`(.*?)`/g, '```$1```');    // code
     }
     
-    // Apply adjustments from end to start
-    for (const adj of adjustments.sort((a, b) => b.start - a.start)) {
-        formatted = formatted.substring(0, adj.start) + 
-                   adj.replacement + 
-                   formatted.substring(adj.end);
-    }
+    // Clean whitespace exactly like Python script
+    formatted = formatted.replace(/[ \t]+/g, ' ');
+    formatted = formatted.replace(/\n{3,}/g, '\n\n');
     
-    // Clean up any double formatting
-    formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*'); // bold
-    formatted = formatted.replace(/__(.*?)__/g, '_$1_');     // italic
-    formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');     // strikethrough
-    
-    return formatted;
+    return formatted.trim();
 }
 
-// Extract entities from message
 function getEntities(msg) {
     const entities = [];
     
+    // Telethon uses different property names
     if (msg.entities) {
-        entities.push(...msg.entities);
+        for (const e of msg.entities) {
+            entities.push({
+                className: e.className,
+                offset: e.offset,
+                length: e.length
+            });
+        }
     }
     if (msg.captionEntities) {
-        entities.push(...msg.captionEntities);
+        for (const e of msg.captionEntities) {
+            entities.push({
+                className: e.className,
+                offset: e.offset,
+                length: e.length
+            });
+        }
     }
     
     return entities;
@@ -152,7 +169,7 @@ async function startTelegramBot(sock, chatId) {
                 
                 // TEXT ONLY
                 if (msg.text && !msg.media) {
-                    const formatted = formatForWhatsApp(msg.text, entities);
+                    const formatted = clean_whatsapp_text(msg.text, entities);
                     await sock.sendMessage(whatsappJid, { text: formatted });
                     return;
                 }
@@ -161,7 +178,7 @@ async function startTelegramBot(sock, chatId) {
                 const buffer = await downloadMedia(telegramClient, msg);
                 if (!buffer) return;
                 
-                const formattedCaption = formatForWhatsApp(caption, entities);
+                const formattedCaption = clean_whatsapp_text(caption, entities);
                 
                 if (msg.photo) {
                     await sock.sendMessage(whatsappJid, {
