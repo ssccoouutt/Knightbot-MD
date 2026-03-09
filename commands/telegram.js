@@ -10,6 +10,7 @@ let telegramClient = null;
 let isActive = false;
 let connectionReady = false;
 let telegramBot = null;
+let whatsappSock = null; // Store WhatsApp socket
 
 // Store pending messages for confirmation
 const pendingMessages = new Map();
@@ -192,8 +193,13 @@ async function downloadMedia(client, message) {
     }
 }
 
-async function sendToWhatsApp(sock, messageData, targetType) {
+async function sendToWhatsApp(messageData, targetType) {
     try {
+        if (!whatsappSock) {
+            log('ERROR', 'WhatsApp socket not available');
+            return false;
+        }
+        
         let targets = [];
         
         switch (targetType) {
@@ -214,14 +220,14 @@ async function sendToWhatsApp(sock, messageData, targetType) {
                        targetType === 'own' ? `${target}@s.whatsapp.net` : `${target}@g.us`;
             
             if (messageData.type === 'text') {
-                await sock.sendMessage(jid, { text: messageData.content });
+                await whatsappSock.sendMessage(jid, { text: messageData.content });
                 log('INFO', 'Text sent', { target: jid });
             } else if (messageData.type === 'media') {
                 const fileSizeMB = messageData.size / (1024 * 1024);
                 
                 if (fileSizeMB > 100) {
                     const fileName = messageData.fileName || 'file.bin';
-                    await sock.sendMessage(jid, {
+                    await whatsappSock.sendMessage(jid, {
                         document: messageData.buffer,
                         fileName: fileName,
                         caption: messageData.caption,
@@ -230,17 +236,17 @@ async function sendToWhatsApp(sock, messageData, targetType) {
                     log('INFO', 'Large file sent as document', { target: jid, sizeMB: Math.round(fileSizeMB * 100) / 100 });
                 } else {
                     if (messageData.mediaType === 'photo') {
-                        await sock.sendMessage(jid, {
+                        await whatsappSock.sendMessage(jid, {
                             image: messageData.buffer,
                             caption: messageData.caption
                         });
                     } else if (messageData.mediaType === 'video') {
-                        await sock.sendMessage(jid, {
+                        await whatsappSock.sendMessage(jid, {
                             video: messageData.buffer,
                             caption: messageData.caption
                         });
                     } else if (messageData.mediaType === 'document') {
-                        await sock.sendMessage(jid, {
+                        await whatsappSock.sendMessage(jid, {
                             document: messageData.buffer,
                             fileName: messageData.fileName,
                             caption: messageData.caption,
@@ -303,13 +309,7 @@ function initTelegramBot() {
                 return;
             }
             
-            const sock = global.sock;
-            if (!sock) {
-                await ctx.editMessageText('❌ WhatsApp not connected');
-                return;
-            }
-            
-            const success = await sendToWhatsApp(sock, messageData, target);
+            const success = await sendToWhatsApp(messageData, target);
             
             if (success) {
                 const targetText = target === 'own' ? 'your chat' : 'all groups';
@@ -329,6 +329,9 @@ function initTelegramBot() {
 
 async function startTelegramBot(sock, chatId) {
     log('INFO', 'Starting Telegram bot', { chatId: chatId.toString() });
+    
+    // Store WhatsApp socket
+    whatsappSock = sock;
 
     try {
         if (telegramClient) await telegramClient.disconnect();
@@ -376,7 +379,7 @@ async function startTelegramBot(sock, chatId) {
                 }
                 
                 // Skip messages that look like our confirmation messages (to prevent loops)
-                if (msg.text && msg.text.includes('📨 *New Message*')) {
+                if (msg.text && msg.text.includes('📨 New Message')) {
                     log('DEBUG', 'Skipping confirmation message', { text: msg.text.substring(0, 50) });
                     return;
                 }
@@ -549,6 +552,7 @@ async function telegramCommand(sock, chatId, message, args) {
             }
             isActive = false;
             connectionReady = false;
+            whatsappSock = null;
             pendingMessages.clear();
             await sock.sendMessage(chatId, { text: '🔴 Stopped' });
             log('INFO', 'Bridge stopped');
