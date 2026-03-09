@@ -1,213 +1,272 @@
+const { TelegramClient } = require('telegram');
+const { StringSession } = require('telegram/sessions');
+const { NewMessage } = require('telegram/events');
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
 
+const CONFIG_FILE = path.join(process.cwd(), 'data', 'telegram_bridge.json');
 const TEMP_DIR = path.join(process.cwd(), 'temp');
+let telegramClient = null;
+let isActive = false;
+
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-// Store active downloads with their update functions
-const activeDownloads = new Map();
+const API_ID = 32086282;
+const API_HASH = "064a66fe7097452e6ac8f4e8df28aa97";
 
-function formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+function loadConfig() {
+    try {
+        if (fs.existsSync(CONFIG_FILE)) {
+            return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+        }
+    } catch (e) {}
+    return {
+        botToken: null,
+        whatsappNumber: null,
+        active: false
+    };
 }
 
-async function updateProgress(sock, chatId, messageKey, percent, downloaded, total, fileName, status = 'downloading') {
-    const barLength = 20;
-    const filled = Math.round((percent * barLength) / 100);
-    const bar = '█'.repeat(filled) + '░'.repeat(barLength - filled);
+function saveConfig(config) {
+    fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+}
+
+// Convert Telegram formatting to WhatsApp style
+function formatForWhatsApp(text, entities) {
+    if (!text) return text;
     
-    let text = '';
-    if (status === 'downloading') {
-        text = `📥 *Downloading...*\n\n${bar} ${percent}%\n📦 Downloaded: ${downloaded} / ${total}\n📁 File: ${fileName}`;
-    } else if (status === 'complete') {
-        text = `✅ *Download complete!*\n\n📁 File: ${fileName}\n📦 Size: ${total}\n⏳ Preparing to send...`;
-    } else if (status === 'sending') {
-        text = `📤 *Sending to WhatsApp...*\n\n📁 File: ${fileName}\n📦 Size: ${total}`;
-    } else if (status === 'error') {
-        text = `❌ *Download failed*\n\n📁 File: ${fileName}\nError: ${downloaded}`;
+    let formatted = text;
+    const adjustments = [];
+    
+    // Sort entities in reverse order to avoid offset issues
+    const sorted = [...(entities || [])].sort((a, b) => b.offset - a.offset);
+    
+    for (const entity of sorted) {
+        const start = entity.offset;
+        const end = start + entity.length;
+        const content = text.substring(start, end);
+        
+        switch (entity.className) {
+            case 'MessageEntityBold':
+                adjustments.push({ start, end, replacement: `*${content}*` });
+                break;
+            case 'MessageEntityItalic':
+                adjustments.push({ start, end, replacement: `_${content}_` });
+                break;
+            case 'MessageEntityStrike':
+                adjustments.push({ start, end, replacement: `~${content}~` });
+                break;
+            case 'MessageEntityCode':
+            case 'MessageEntityPre':
+                adjustments.push({ start, end, replacement: `\`\`\`${content}\`\`\`` });
+                break;
+            case 'MessageEntityUnderline':
+                // WhatsApp doesn't have underline, use bold as fallback
+                adjustments.push({ start, end, replacement: `*${content}*` });
+                break;
+            case 'MessageEntitySpoiler':
+                // No spoiler in WhatsApp, send as is
+                break;
+        }
     }
     
-    await sock.sendMessage(chatId, {
-        text: text,
-        edit: messageKey
-    });
+    // Apply adjustments from end to start
+    for (const adj of adjustments.sort((a, b) => b.start - a.start)) {
+        formatted = formatted.substring(0, adj.start) + 
+                   adj.replacement + 
+                   formatted.substring(adj.end);
+    }
+    
+    // Clean up any double formatting
+    formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*'); // bold
+    formatted = formatted.replace(/__(.*?)__/g, '_$1_');     // italic
+    formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');     // strikethrough
+    
+    return formatted;
 }
 
-async function downloadFile(sock, chatId, messageKey, url, fileName, contentLength, contentType) {
-    const downloadId = `${chatId}_${Date.now()}`;
-    const safeFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const tempFile = path.join(TEMP_DIR, `download_${Date.now()}_${safeFileName}`);
+// Extract entities from message
+function getEntities(msg) {
+    const entities = [];
     
-    // Register this download
-    activeDownloads.set(downloadId, { chatId, fileName, progress: 0, status: 'starting' });
+    if (msg.entities) {
+        entities.push(...msg.entities);
+    }
+    if (msg.captionEntities) {
+        entities.push(...msg.captionEntities);
+    }
     
+    return entities;
+}
+
+async function downloadMedia(client, message) {
     try {
-        const downloadResponse = await axios({
-            method: 'GET',
-            url: url,
-            responseType: 'stream',
-            timeout: 7200000,
-            onDownloadProgress: (progressEvent) => {
-                if (progressEvent.lengthComputable) {
-                    const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-                    const downloaded = formatFileSize(progressEvent.loaded);
-                    const total = formatFileSize(progressEvent.total);
-                    
-                    // Update progress in map
-                    const download = activeDownloads.get(downloadId);
-                    if (download) {
-                        download.progress = percent;
-                        download.status = 'downloading';
-                        activeDownloads.set(downloadId, download);
-                    }
-                    
-                    // Update WhatsApp message
-                    updateProgress(sock, chatId, messageKey, percent, downloaded, total, fileName);
-                }
-            }
-        });
-
-        const writer = fs.createWriteStream(tempFile);
-        downloadResponse.data.pipe(writer);
-        
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
-
-        const stats = fs.statSync(tempFile);
-        if (stats.size === 0) throw new Error('File is empty');
-
-        // Update status
-        const download = activeDownloads.get(downloadId);
-        if (download) {
-            download.progress = 100;
-            download.status = 'complete';
-            activeDownloads.set(downloadId, download);
-        }
-
-        await updateProgress(sock, chatId, messageKey, 100, formatFileSize(stats.size), formatFileSize(stats.size), fileName, 'complete');
-        await updateProgress(sock, chatId, messageKey, 100, formatFileSize(stats.size), formatFileSize(stats.size), fileName, 'sending');
-        
-        // Update status
-        if (download) {
-            download.status = 'sending';
-            activeDownloads.set(downloadId, download);
-        }
-        
-        const fileBuffer = fs.readFileSync(tempFile);
-        await sock.sendMessage(chatId, {
-            document: fileBuffer,
-            fileName: fileName,
-            mimetype: contentType,
-            caption: `✅ *Download complete!*\n\n📁 *File:* ${fileName}\n📦 *Size:* ${formatFileSize(stats.size)}`
-        });
-
-        // Delete progress message
-        await sock.sendMessage(chatId, {
-            delete: messageKey
-        });
-
-        // Clean up
+        const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
+        await client.downloadMedia(message, { outputFile: tempFile });
+        const buffer = fs.readFileSync(tempFile);
         fs.unlinkSync(tempFile);
-        
-        // Remove from active downloads
-        activeDownloads.delete(downloadId);
-
+        return buffer;
     } catch (error) {
-        console.error('Download error:', error);
-        
-        if (fs.existsSync(tempFile)) {
-            fs.unlinkSync(tempFile);
-        }
-        
-        let errorMsg = 'Download failed';
-        if (error.response?.status === 404) errorMsg = 'File not found (404)';
-        else if (error.response?.status === 403) errorMsg = 'Access denied (403)';
-        else if (error.code === 'ECONNABORTED') errorMsg = 'Download timeout';
-        else errorMsg = error.message;
-        
-        await updateProgress(sock, chatId, messageKey, 0, errorMsg, '', fileName, 'error');
-        
-        // Remove from active downloads
-        activeDownloads.delete(downloadId);
+        return null;
     }
 }
 
-async function downCommand(sock, chatId, message, url) {
-    if (!url) {
-        await sock.sendMessage(chatId, { 
-            text: '❌ Please provide a direct download link!\nExample: .down https://example.com/file.pdf' 
-        });
-        return;
+async function startTelegramBot(sock, chatId) {
+    const config = loadConfig();
+    
+    if (!config.botToken) {
+        await sock.sendMessage(chatId, { text: '❌ Set bot token first: `.settoken TOKEN`' });
+        return false;
+    }
+    
+    if (!config.whatsappNumber) {
+        await sock.sendMessage(chatId, { text: '❌ Set WhatsApp number first: `.setwa NUMBER`' });
+        return false;
     }
 
     try {
-        // Send initial progress message
-        const progressMsg = await sock.sendMessage(chatId, { 
-            text: '⏳ Checking file...' 
-        });
-
-        // Get file info
-        const headResponse = await axios({
-            method: 'HEAD',
-            url: url,
-            timeout: 10000,
-            maxRedirects: 5
-        }).catch(() => ({ headers: {} }));
-
-        const contentLength = headResponse.headers['content-length'];
-        const contentType = headResponse.headers['content-type'] || 'application/octet-stream';
+        if (telegramClient) await telegramClient.disconnect();
         
-        // Extract filename
-        let fileName = url.split('/').pop().split('?')[0] || 'file';
-        const contentDisposition = headResponse.headers['content-disposition'];
-        if (contentDisposition) {
-            const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-            if (match) fileName = match[1].replace(/['"]/g, '');
-        }
-
-        // Start download in background
-        downloadFile(sock, chatId, progressMsg.key, url, fileName, contentLength, contentType)
-            .catch(err => console.error('Background download error:', err));
-
-        // Immediate response
-        await sock.sendMessage(chatId, { 
-            text: `✅ *Download started in background!*\n\n` +
-                  `📁 File: ${fileName}\n` +
-                  `📦 Size: ${contentLength ? formatFileSize(parseInt(contentLength)) : 'Unknown'}\n\n` +
-                  `🔄 You can check status with .dlstatus\n` +
-                  `📊 Active downloads: ${activeDownloads.size + 1}`
+        const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
+            config.whatsappNumber :
+            `${config.whatsappNumber}@s.whatsapp.net`;
+        
+        telegramClient = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
+            connectionRetries: 5
         });
-
+        
+        await telegramClient.start({ botAuthToken: config.botToken });
+        console.log('✅ Connected');
+        
+        async function messageHandler(event) {
+            try {
+                const msg = event.message;
+                if (!msg) return;
+                
+                // Skip commands
+                if (msg.text && msg.text.startsWith('/')) return;
+                
+                const entities = getEntities(msg);
+                const caption = msg.text || '';
+                
+                // TEXT ONLY
+                if (msg.text && !msg.media) {
+                    const formatted = formatForWhatsApp(msg.text, entities);
+                    await sock.sendMessage(whatsappJid, { text: formatted });
+                    return;
+                }
+                
+                // MEDIA
+                const buffer = await downloadMedia(telegramClient, msg);
+                if (!buffer) return;
+                
+                const formattedCaption = formatForWhatsApp(caption, entities);
+                
+                if (msg.photo) {
+                    await sock.sendMessage(whatsappJid, {
+                        image: buffer,
+                        caption: formattedCaption
+                    });
+                }
+                else if (msg.video) {
+                    await sock.sendMessage(whatsappJid, {
+                        video: buffer,
+                        caption: formattedCaption
+                    });
+                }
+                else if (msg.document) {
+                    const fileName = msg.document.attributes
+                        .find(a => a.className === 'DocumentAttributeFilename')?.fileName || 'file';
+                    
+                    await sock.sendMessage(whatsappJid, {
+                        document: buffer,
+                        fileName: fileName,
+                        caption: formattedCaption
+                    });
+                }
+                else if (msg.audio) {
+                    await sock.sendMessage(whatsappJid, {
+                        audio: buffer,
+                        caption: formattedCaption
+                    });
+                }
+                else if (msg.voice) {
+                    await sock.sendMessage(whatsappJid, {
+                        audio: buffer,
+                        ptt: true
+                    });
+                }
+                else if (msg.sticker) {
+                    await sock.sendMessage(whatsappJid, {
+                        sticker: buffer
+                    });
+                }
+                
+            } catch (err) {
+                // Silent
+            }
+        }
+        
+        telegramClient.addEventHandler(messageHandler, new NewMessage({}));
+        
+        isActive = true;
+        config.active = true;
+        saveConfig(config);
+        
+        await sock.sendMessage(chatId, { text: '✅ Bridge active' });
+        return true;
+        
     } catch (error) {
-        console.error('Download command error:', error);
-        await sock.sendMessage(chatId, { text: '❌ Failed to start download.' });
+        await sock.sendMessage(chatId, { text: '❌ Failed' });
+        return false;
     }
 }
 
-// Add status command
-async function dlstatusCommand(sock, chatId, message) {
-    if (activeDownloads.size === 0) {
-        await sock.sendMessage(chatId, { text: '📊 No active downloads.' });
+async function telegramCommand(sock, chatId, message, args) {
+    const sub = args[0]?.toLowerCase();
+    const config = loadConfig();
+    
+    if (!sub) {
+        await sock.sendMessage(chatId, { 
+            text: `📊 Status\nActive: ${isActive ? '✅' : '❌'}\nToken: ${config.botToken ? '✅' : '❌'}\nWhatsApp: ${config.whatsappNumber || 'Not set'}\n\nCommands:\n.on\n.off\n.settoken\n.setwa`
+        });
         return;
     }
     
-    let status = `📊 *Active Downloads: ${activeDownloads.size}*\n\n`;
-    let i = 1;
-    for (const [id, download] of activeDownloads.entries()) {
-        status += `${i}. 📁 ${download.fileName}\n`;
-        status += `   📊 Progress: ${download.progress}%\n`;
-        status += `   📍 Status: ${download.status}\n`;
-        if (i < activeDownloads.size) status += '\n';
-        i++;
+    switch (sub) {
+        case 'on':
+            await startTelegramBot(sock, chatId);
+            break;
+        case 'off':
+            if (telegramClient) await telegramClient.disconnect();
+            isActive = false;
+            config.active = false;
+            saveConfig(config);
+            await sock.sendMessage(chatId, { text: '🔴 Stopped' });
+            break;
     }
-    
-    await sock.sendMessage(chatId, { text: status });
 }
 
-module.exports = { downCommand, dlstatusCommand };
+async function setTokenCommand(sock, chatId, message, token) {
+    if (!token) return await sock.sendMessage(chatId, { text: '❌ Provide token' });
+    const config = loadConfig();
+    config.botToken = token;
+    saveConfig(config);
+    await sock.sendMessage(chatId, { text: '✅ Token saved' });
+}
+
+async function setWaCommand(sock, chatId, message, number) {
+    if (!number) return await sock.sendMessage(chatId, { text: '❌ Provide number' });
+    const cleanNumber = number.replace(/[^0-9]/g, '');
+    const config = loadConfig();
+    config.whatsappNumber = cleanNumber;
+    saveConfig(config);
+    await sock.sendMessage(chatId, { text: `✅ WhatsApp set: ${cleanNumber}` });
+}
+
+module.exports = {
+    telegramCommand,
+    setTokenCommand,
+    setWaCommand
+};
