@@ -53,11 +53,32 @@ async function downloadMedia(client, message) {
     try {
         const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
         await client.downloadMedia(message, { outputFile: tempFile });
+        
+        // Check if file exists before reading
+        if (!fs.existsSync(tempFile)) {
+            log('ERROR', 'Media file not created', { messageId: message.id });
+            return null;
+        }
+        
         const buffer = fs.readFileSync(tempFile);
-        fs.unlinkSync(tempFile);
+        fs.unlinkSync(tempFile); // Clean up temp file
         return buffer;
     } catch (error) {
-        log('ERROR', 'Media download failed', { error: error.message });
+        log('ERROR', 'Media download failed', { 
+            messageId: message.id,
+            error: error.message 
+        });
+        
+        // Clean up temp file if it exists
+        try {
+            const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
+            if (fs.existsSync(tempFile)) {
+                fs.unlinkSync(tempFile);
+            }
+        } catch (cleanupError) {
+            // Ignore cleanup errors
+        }
+        
         return null;
     }
 }
