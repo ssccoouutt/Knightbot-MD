@@ -32,13 +32,16 @@ const WHATSAPP_GROUPS = [
     "120363161222427319@g.us"   // Fifth group
 ];
 
-// Logger function with timestamps - FIXED to handle BigInt
+// Rate limiting - add delays between sends
+const RATE_LIMIT_DELAY = 3000; // 3 seconds between sends
+const BATCH_SIZE = 2; // Send to 2 groups at a time max
+
+// Logger function with timestamps
 function log(level, message, data = null) {
     const timestamp = new Date().toISOString();
     let logMessage = `[${timestamp}] [${level}] ${message}`;
     console.log(logMessage);
     if (data) {
-        // Convert BigInt values to strings for logging
         const processedData = JSON.parse(JSON.stringify(data, (key, value) => 
             typeof value === 'bigint' ? value.toString() : value
         ));
@@ -52,7 +55,7 @@ function log(level, message, data = null) {
     );
 }
 
-// EXACT Python cleanup function 1: Clean whitespace
+// EXACT Python cleanup function
 function cleanWhitespace(text) {
     if (!text) return text;
     text = text.replace(/[ \t]+/g, ' ');
@@ -60,28 +63,8 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
-// EXACT Python line wrapping function
-function wrapLines(content, prefix, suffix) {
-    const lines = content.split('\n');
-    const wrappedLines = [];
-    for (const line of lines) {
-        if (line.trim()) {
-            wrappedLines.push(prefix + line.trim() + suffix);
-        } else {
-            wrappedLines.push('');
-        }
-    }
-    return wrappedLines.join('\n');
-}
-
 function convertTelegramToWhatsApp(text, entities) {
     if (!text) return text;
-    
-    log('DEBUG', 'Converting text with entities', { 
-        originalText: text,
-        originalLength: text.length,
-        entityCount: entities?.length || 0
-    });
     
     let cleanText = text;
     cleanText = cleanText.replace(/\*\*/g, '');
@@ -147,11 +130,9 @@ function convertTelegramToWhatsApp(text, entities) {
 async function downloadMedia(client, message) {
     try {
         if (message.media?.className === 'MessageMediaWebPage') {
-            log('DEBUG', 'Skipping webpage media (no downloadable content)', { messageId: message.id });
             return null;
         }
         
-        // Add multiple retry attempts with increasing delays
         let lastError = null;
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
@@ -166,13 +147,12 @@ async function downloadMedia(client, message) {
                 await client.downloadMedia(message, { 
                     outputFile: tempFile,
                     progressCallback: (received, total) => {
-                        if (received % 100000 === 0) { // Log every 100KB
+                        if (received % 100000 === 0) {
                             log('DEBUG', `Download progress: ${Math.round(received/1024)}KB/${Math.round(total/1024)}KB`, { messageId: message.id });
                         }
                     }
                 });
                 
-                // Check if file exists and has content
                 if (!fs.existsSync(tempFile)) {
                     throw new Error('File not created');
                 }
@@ -206,23 +186,19 @@ async function downloadMedia(client, message) {
                     error: err.message 
                 });
                 
-                // Clean up temp file if it exists
                 try {
                     const tempFile = path.join(TEMP_DIR, `tg_${message.id}_attempt_${attempt}`);
                     if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
                 } catch (cleanupError) {}
                 
-                // Wait before retry (increasing delay)
                 if (attempt < 3) {
                     const delay = attempt * 2000;
-                    log('DEBUG', `Waiting ${delay}ms before retry...`, { messageId: message.id });
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
         }
         
-        // All attempts failed
-        log('ERROR', '❌ ALL download attempts failed - media cannot be retrieved', { 
+        log('ERROR', '❌ ALL download attempts failed', { 
             messageId: message.id,
             lastError: lastError?.message 
         });
@@ -262,111 +238,97 @@ async function sendToWhatsApp(messageData, targetType) {
         let successCount = 0;
         let failedTargets = [];
         
-        // For media messages, we already have the buffer - reuse it for all targets
-        const mediaBuffer = messageData.type === 'media' ? messageData.buffer : null;
-        const mediaCaption = messageData.type === 'media' ? messageData.caption : null;
-        const mediaFileName = messageData.type === 'media' ? messageData.fileName : null;
-        const mediaMimeType = messageData.type === 'media' ? messageData.mimeType : null;
-        const mediaType = messageData.type === 'media' ? messageData.mediaType : null;
-        const mediaSize = messageData.type === 'media' ? messageData.size : null;
-        
-        // Verify media buffer exists for media messages
-        if (messageData.type === 'media' && !mediaBuffer) {
-            log('ERROR', '❌ Media message has no buffer - cannot send', { messageData });
-            return false;
-        }
-        
-        // Send to all targets sequentially with small delay
-        for (let i = 0; i < targets.length; i++) {
-            const target = targets[i];
-            const jid = target.includes('@') ? target : 
-                       targetType === 'own' ? `${target}@s.whatsapp.net` : `${target}@g.us`;
+        // Process in batches to avoid overwhelming WhatsApp
+        for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+            const batch = targets.slice(i, i + BATCH_SIZE);
             
-            try {
-                if (messageData.type === 'text') {
-                    await whatsappSock.sendMessage(jid, { text: messageData.content });
-                    log('INFO', '✅ Text sent', { target: jid, index: i + 1 });
-                    successCount++;
-                    
-                } else if (messageData.type === 'media') {
-                    // Use the already downloaded buffer for all targets
-                    const fileSizeMB = mediaSize / (1024 * 1024);
-                    
-                    log('DEBUG', 'Sending media using cached buffer', {
-                        type: mediaType,
-                        size: `${fileSizeMB.toFixed(2)}MB`,
-                        target: jid,
-                        bufferSize: mediaBuffer.length
-                    });
-                    
-                    if (fileSizeMB > 100) {
-                        await whatsappSock.sendMessage(jid, {
-                            document: mediaBuffer,
-                            fileName: mediaFileName || 'file.bin',
-                            caption: mediaCaption,
-                            mimetype: mediaMimeType
+            // Send batch in parallel (2 at a time)
+            const batchPromises = batch.map(async (target, index) => {
+                const jid = target.includes('@') ? target : 
+                           targetType === 'own' ? `${target}@s.whatsapp.net` : `${target}@g.us`;
+                
+                try {
+                    if (messageData.type === 'text') {
+                        await whatsappSock.sendMessage(jid, { text: messageData.content });
+                        log('INFO', '✅ Text sent', { target: jid });
+                        successCount++;
+                        
+                    } else if (messageData.type === 'media') {
+                        const mediaBuffer = messageData.buffer;
+                        const mediaCaption = messageData.caption || '';
+                        const mediaFileName = messageData.fileName;
+                        const mediaMimeType = messageData.mimeType;
+                        const mediaType = messageData.mediaType;
+                        const mediaSize = messageData.size;
+                        
+                        const fileSizeMB = mediaSize / (1024 * 1024);
+                        
+                        log('DEBUG', 'Sending media', {
+                            type: mediaType,
+                            size: `${fileSizeMB.toFixed(2)}MB`,
+                            target: jid
                         });
-                        log('INFO', '✅ Large file sent as document', { 
-                            target: jid, 
-                            sizeMB: Math.round(fileSizeMB * 100) / 100 
-                        });
-                    } else {
-                        if (mediaType === 'photo') {
-                            await whatsappSock.sendMessage(jid, {
-                                image: mediaBuffer,
-                                caption: mediaCaption
-                            });
-                            log('INFO', '✅ Photo sent', { target: jid });
-                        } else if (mediaType === 'video') {
-                            await whatsappSock.sendMessage(jid, {
-                                video: mediaBuffer,
-                                caption: mediaCaption
-                            });
-                            log('INFO', '✅ Video sent', { target: jid });
-                        } else if (mediaType === 'document') {
+                        
+                        if (fileSizeMB > 100) {
                             await whatsappSock.sendMessage(jid, {
                                 document: mediaBuffer,
-                                fileName: mediaFileName,
+                                fileName: mediaFileName || 'file.bin',
                                 caption: mediaCaption,
                                 mimetype: mediaMimeType
                             });
-                            log('INFO', '✅ Document sent', { target: jid });
-                        } else if (mediaType === 'audio') {
-                            await whatsappSock.sendMessage(jid, {
-                                audio: mediaBuffer,
-                                caption: mediaCaption
-                            });
-                            log('INFO', '✅ Audio sent', { target: jid });
-                        } else if (mediaType === 'voice') {
-                            await whatsappSock.sendMessage(jid, {
-                                audio: mediaBuffer,
-                                ptt: true
-                            });
-                            log('INFO', '✅ Voice sent', { target: jid });
-                        } else if (mediaType === 'sticker') {
-                            await whatsappSock.sendMessage(jid, {
-                                sticker: mediaBuffer
-                            });
-                            log('INFO', '✅ Sticker sent', { target: jid });
+                        } else {
+                            if (mediaType === 'photo') {
+                                await whatsappSock.sendMessage(jid, {
+                                    image: mediaBuffer,
+                                    caption: mediaCaption
+                                });
+                            } else if (mediaType === 'video') {
+                                await whatsappSock.sendMessage(jid, {
+                                    video: mediaBuffer,
+                                    caption: mediaCaption
+                                });
+                            } else if (mediaType === 'document') {
+                                await whatsappSock.sendMessage(jid, {
+                                    document: mediaBuffer,
+                                    fileName: mediaFileName,
+                                    caption: mediaCaption,
+                                    mimetype: mediaMimeType
+                                });
+                            } else if (mediaType === 'audio') {
+                                await whatsappSock.sendMessage(jid, {
+                                    audio: mediaBuffer,
+                                    caption: mediaCaption
+                                });
+                            } else if (mediaType === 'voice') {
+                                await whatsappSock.sendMessage(jid, {
+                                    audio: mediaBuffer,
+                                    ptt: true
+                                });
+                            } else if (mediaType === 'sticker') {
+                                await whatsappSock.sendMessage(jid, {
+                                    sticker: mediaBuffer
+                                });
+                            }
                         }
+                        successCount++;
                     }
-                    successCount++;
+                    
+                    return { success: true, target: jid };
+                    
+                } catch (err) {
+                    log('ERROR', `Failed to send to ${jid}`, { error: err.message });
+                    failedTargets.push(jid);
+                    return { success: false, target: jid, error: err.message };
                 }
-                
-                // Small delay between sends (1 second) to avoid rate limiting
-                if (i < targets.length - 1) {
-                    log('DEBUG', `Waiting 1 second before next send...`);
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
-                
-            } catch (err) {
-                log('ERROR', `Failed to send to ${jid}`, { error: err.message });
-                failedTargets.push(jid);
-                
-                // Still wait before next attempt even if this one failed
-                if (i < targets.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
+            });
+            
+            // Wait for batch to complete
+            const batchResults = await Promise.allSettled(batchPromises);
+            
+            // IMPORTANT: Delay between batches to let WhatsApp breathe
+            if (i + BATCH_SIZE < targets.length) {
+                log('DEBUG', `Batch complete, waiting ${RATE_LIMIT_DELAY}ms before next batch...`);
+                await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
             }
         }
         
@@ -474,35 +436,26 @@ async function startTelegramBot(sock, chatId) {
         async function messageHandler(event) {
             try {
                 const msg = event.message;
-                if (!msg) {
-                    log('DEBUG', 'Empty message received');
-                    return;
-                }
+                if (!msg) return;
                 
-                // Get sender info to check if it's the bot itself
+                // Get sender info
                 let senderId = null;
                 if (msg.fromId) {
                     if (msg.fromId.userId) senderId = msg.fromId.userId.toString();
                     else if (msg.fromId.value) senderId = msg.fromId.value.toString();
                 }
                 
-                // CRITICAL: Skip messages from the bot itself to prevent loops
+                // Skip messages from the bot itself
                 if (senderId === BOT_ID) {
                     log('DEBUG', 'Skipping message from bot itself', { senderId });
                     return;
                 }
                 
-                // Skip if it's a command
-                if (msg.text && msg.text.startsWith('/')) {
-                    log('DEBUG', 'Skipping command', { text: msg.text });
-                    return;
-                }
+                // Skip commands
+                if (msg.text && msg.text.startsWith('/')) return;
                 
-                // Skip messages that look like our confirmation messages (to prevent loops)
-                if (msg.text && msg.text.includes('📨 New Message')) {
-                    log('DEBUG', 'Skipping confirmation message', { text: msg.text.substring(0, 50) });
-                    return;
-                }
+                // Skip confirmation messages
+                if (msg.text && msg.text.includes('📨 New Message')) return;
                 
                 log('INFO', '📨 MESSAGE RECEIVED', {
                     messageId: msg.id.toString(),
@@ -511,17 +464,12 @@ async function startTelegramBot(sock, chatId) {
                     hasMedia: !!msg.media
                 });
                 
-                // Get the chat ID to send confirmation back
                 const chatId = msg.chatId?.value?.toString() || msg.peerId?.userId?.toString();
-                if (!chatId) {
-                    log('ERROR', 'Cannot determine chat ID');
-                    return;
-                }
+                if (!chatId) return;
                 
                 const text = msg.text || msg.caption || '';
                 const entities = msg.entities || [];
                 
-                log('DEBUG', 'Converting text', { textLength: text.length });
                 const formattedText = convertTelegramToWhatsApp(text, entities);
                 
                 let messageData = {
@@ -530,9 +478,8 @@ async function startTelegramBot(sock, chatId) {
                     timestamp: Date.now()
                 };
                 
-                // Handle media if present - MUST download successfully or we don't proceed
                 if (msg.media && msg.media.className !== 'MessageMediaWebPage') {
-                    log('DEBUG', '📥 Downloading media (MUST succeed)', { messageId: msg.id.toString() });
+                    log('DEBUG', '📥 Downloading media', { messageId: msg.id.toString() });
                     
                     const mediaResult = await downloadMedia(telegramClient, msg);
                     
@@ -574,41 +521,30 @@ async function startTelegramBot(sock, chatId) {
                         
                         log('INFO', '✅ Media downloaded successfully', { 
                             type: mediaType, 
-                            size: mediaResult.size,
-                            bufferSize: mediaResult.buffer.length
+                            size: mediaResult.size
                         });
                     } else {
-                        // CRITICAL: Media download failed - DO NOT PROCEED
-                        log('ERROR', '❌ Media download failed - message will NOT be forwarded', { 
-                            messageId: msg.id.toString() 
-                        });
-                        
-                        // Notify user that media couldn't be downloaded
+                        log('ERROR', '❌ Media download failed', { messageId: msg.id.toString() });
                         await telegramBot.telegram.sendMessage(
                             parseInt(chatId),
-                            `❌ Failed to download media from Telegram. The message will NOT be forwarded to WhatsApp.`,
+                            `❌ Failed to download media. The message will NOT be forwarded.`,
                             {}
                         );
-                        
-                        // Skip this message entirely
                         return;
                     }
                 }
                 
-                // Store in pending messages using chatId
                 const pendingKey = `${chatId}_${msg.id}`;
                 pendingMessages.set(pendingKey, messageData);
-                log('INFO', 'Message stored in pending', { pendingKey });
                 
                 // Cleanup old messages
                 const now = Date.now();
                 for (const [key, data] of pendingMessages.entries()) {
-                    if (now - data.timestamp > 300000) { // 5 minutes
+                    if (now - data.timestamp > 300000) {
                         pendingMessages.delete(key);
                     }
                 }
                 
-                // Create preview
                 const previewText = formattedText.length > 100 ? 
                     formattedText.substring(0, 100) + '...' : 
                     formattedText || '[No text]';
@@ -616,15 +552,11 @@ async function startTelegramBot(sock, chatId) {
                 const fileSizeInfo = messageData.type === 'media' ? 
                     ` (${(messageData.size / 1024 / 1024).toFixed(2)}MB)` : '';
                 
-                // Simple plain text message
                 const confirmationMessage = 
                     `📨 New Message\n\n` +
                     `Preview: ${previewText}${fileSizeInfo}\n\n` +
                     `Forward to?`;
                 
-                log('INFO', 'Sending confirmation', { chatId });
-                
-                // Send confirmation back to the same chat
                 await telegramBot.telegram.sendMessage(
                     parseInt(chatId),
                     confirmationMessage,
@@ -643,22 +575,15 @@ async function startTelegramBot(sock, chatId) {
                     }
                 );
                 
-                log('INFO', '✅ Confirmation sent', { 
-                    chatId, 
-                    messageId: msg.id.toString() 
-                });
+                log('INFO', '✅ Confirmation sent', { chatId, messageId: msg.id.toString() });
                 
             } catch (err) {
-                log('ERROR', 'Message handler error', { 
-                    error: err.message,
-                    stack: err.stack 
-                });
+                log('ERROR', 'Message handler error', { error: err.message });
             }
         }
         
-        // Add event handler for all messages
         telegramClient.addEventHandler(messageHandler, new NewMessage({}));
-        log('INFO', '✅ Message handler registered - ready to receive messages');
+        log('INFO', '✅ Message handler registered');
         
         isActive = true;
         
