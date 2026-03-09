@@ -4,10 +4,6 @@ const { NewMessage } = require('telegram/events');
 const fs = require('fs');
 const path = require('path');
 const { Telegraf } = require('telegraf');
-const axios = require('axios');
-const stream = require('stream');
-const { promisify } = require('util');
-const pipeline = promisify(stream.pipeline);
 
 const TEMP_DIR = path.join(process.cwd(), 'temp');
 let telegramClient = null;
@@ -25,6 +21,7 @@ const API_HASH = "064a66fe7097452e6ac8f4e8df28aa97";
 
 // Hardcoded values
 const TELEGRAM_BOT_TOKEN = "8717510346:AAFi_8U7L0KCh13UzEu69EGc7j8qDteyu70";
+const BOT_USERNAME = "YourBotUsername"; // Replace with your bot's username
 const WHATSAPP_NUMBER = "923247220362";
 const WHATSAPP_GROUPS = [
     "120363140590753276@g.us",  // Original group
@@ -277,10 +274,6 @@ async function sendToWhatsApp(sock, messageData, targetType) {
         
         log('INFO', `Sending to ${targets.length} WhatsApp targets`, { targetType });
         
-        const whatsappJid = WHATSAPP_NUMBER.includes('@s.whatsapp.net') ?
-            WHATSAPP_NUMBER :
-            `${WHATSAPP_NUMBER}@s.whatsapp.net`;
-        
         for (const target of targets) {
             const jid = target.includes('@') ? target : 
                        targetType === 'own' ? `${target}@s.whatsapp.net` : `${target}@g.us`;
@@ -361,9 +354,9 @@ function initTelegramBot() {
     telegramBot.command('start', (ctx) => {
         const helpMessage = 
             `🤖 *Welcome to WhatsApp Forwarder Bot*\n\n` +
-            `This bot forwards messages from your other Telegram bot to WhatsApp with your confirmation.\n\n` +
+            `This bot forwards messages to WhatsApp with your confirmation.\n\n` +
             `*How it works:*\n` +
-            `1️⃣ You send a message to your other Telegram bot\n` +
+            `1️⃣ Send any message to this bot\n` +
             `2️⃣ I'll ask you where to forward it\n` +
             `3️⃣ Choose destination:\n` +
             `   • 📱 *Own Chat* - Send to your personal WhatsApp\n` +
@@ -443,14 +436,78 @@ function initTelegramBot() {
         }
     });
     
+    // Handle regular messages
+    telegramBot.on('message', async (ctx) => {
+        try {
+            const message = ctx.message;
+            const chatId = ctx.chat.id;
+            
+            log('INFO', 'Direct message received in Telegram bot', {
+                chatId,
+                hasText: !!message.text,
+                hasMedia: !!message.photo || !!message.video || !!message.document
+            });
+            
+            // Process the message as if it came through the bridge
+            const text = message.text || message.caption || '';
+            const formattedText = convertTelegramToWhatsApp(text, []);
+            
+            let messageData = {
+                type: 'text',
+                content: formattedText,
+                timestamp: Date.now()
+            };
+            
+            if (message.photo || message.video || message.document) {
+                // For direct media, we need to download it
+                // This is simplified - you might need to implement media download for direct messages
+                messageData = {
+                    type: 'text',
+                    content: formattedText + '\n\n[Media received directly - use the bridge bot for media]',
+                    timestamp: Date.now()
+                };
+            }
+            
+            const pendingKey = `${chatId}_${message.message_id}`;
+            pendingMessages.set(pendingKey, messageData);
+            
+            const previewText = formattedText.length > 200 ? 
+                formattedText.substring(0, 200) + '...' : 
+                formattedText;
+            
+            const confirmationMessage = 
+                `📨 *New message received*\n\n` +
+                `Preview:\n${previewText}\n\n` +
+                `Type: ${message.photo || message.video || message.document ? 'Media' : 'Text'}\n` +
+                `Length: ${formattedText.length} characters\n\n` +
+                `Where would you like to forward this to WhatsApp?`;
+            
+            await ctx.reply(confirmationMessage, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '📱 Own Chat', callback_data: `confirm_${message.message_id}_own` },
+                            { text: '👥 All Groups', callback_data: `confirm_${message.message_id}_group` }
+                        ],
+                        [
+                            { text: '❌ Cancel', callback_data: `confirm_${message.message_id}_cancel` }
+                        ]
+                    ]
+                }
+            });
+            
+        } catch (error) {
+            log('ERROR', 'Message handler error in Telegram bot', { error: error.message });
+        }
+    });
+    
     telegramBot.launch();
     log('INFO', 'Telegram confirmation bot started');
 }
 
 async function startTelegramBot(sock, chatId) {
     log('INFO', 'Starting Telegram bot', { chatId });
-    
-    // Hardcoded values, no config needed
 
     try {
         if (telegramClient) await telegramClient.disconnect();
@@ -498,6 +555,12 @@ async function startTelegramBot(sock, chatId) {
                 
                 if (!senderId) {
                     log('DEBUG', 'Could not determine sender ID, skipping message', { messageId: msg.id });
+                    return;
+                }
+                
+                // CRITICAL FIX: Skip messages from the bot itself
+                if (senderId.toString() === '8717510346') {
+                    log('DEBUG', 'Skipping message from bot itself', { senderId });
                     return;
                 }
                 
@@ -609,6 +672,7 @@ async function startTelegramBot(sock, chatId) {
                     `Length: ${formattedText.length} characters\n\n` +
                     `Where would you like to forward this to WhatsApp?`;
                 
+                // Use the same bot instance to send confirmation
                 await telegramBot.telegram.sendMessage(
                     senderId,
                     confirmationMessage,
