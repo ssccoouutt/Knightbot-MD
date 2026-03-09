@@ -10,10 +10,22 @@ let telegramClient = null;
 let isActive = false;
 let connectionReady = false;
 
+// Store pending messages for confirmation
+const pendingMessages = new Map();
+
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const API_ID = 32086282;
 const API_HASH = "064a66fe7097452e6ac8f4e8df28aa97";
+
+// WhatsApp Configuration from Python script
+const WHATSAPP_GROUPS = [
+    "120363140590753276@g.us",  // Original group
+    "120363162260844407@g.us",
+    "120363042237526273@g.us", 
+    "120363023394033137@g.us",
+    "120363161222427319@g.us"   // Fifth group
+];
 
 // Logger function with timestamps
 function log(level, message, data = null) {
@@ -160,87 +172,6 @@ function wrapLines(content, prefix, suffix) {
     return wrappedLines.join('\n');
 }
 
-function getEntityPriority(entityType) {
-    // Higher number = higher priority (processed last so it wraps others)
-    switch (entityType) {
-        case 'MessageEntityBold':
-            return 2;
-        case 'MessageEntityItalic':
-            return 2;
-        case 'MessageEntityStrike':
-            return 2;
-        case 'MessageEntityCode':
-        case 'MessageEntityPre':
-            return 3;
-        case 'MessageEntityTextUrl':
-        case 'MessageEntityUrl':
-            return 1;
-        case 'MessageEntityBlockquote':
-            return 0; // Lowest priority - just marks range, doesn't add formatting
-        default:
-            return 0;
-    }
-}
-
-function combineFormatting(existingFormatted, newPrefix, newSuffix) {
-    // Combine existing formatting with new formatting
-    // For WhatsApp, we need to nest them properly
-    
-    // Remove existing prefix/suffix if they exist
-    let content = existingFormatted;
-    
-    // Check if already has bold
-    const hasBold = content.startsWith('*') && content.endsWith('*');
-    const hasItalic = content.startsWith('_') && content.endsWith('_');
-    const hasStrike = content.startsWith('~') && content.endsWith('~');
-    
-    if (hasBold) {
-        content = content.substring(1, content.length - 1);
-    }
-    if (hasItalic) {
-        content = content.substring(1, content.length - 1);
-    }
-    if (hasStrike) {
-        content = content.substring(1, content.length - 1);
-    }
-    
-    // Apply new formatting
-    let result = content;
-    
-    // Apply in correct order for WhatsApp (bold+italic = *_text_*)
-    if (newPrefix === '*' && newSuffix === '*') {
-        // Adding bold
-        if (hasItalic) {
-            result = '*' + result + '*'; // Will be combined as *_text_*
-        } else {
-            result = '*' + result + '*';
-        }
-    } else if (newPrefix === '_' && newSuffix === '_') {
-        // Adding italic
-        if (hasBold) {
-            result = '_' + result + '_'; // Will be combined as *_text_*
-        } else {
-            result = '_' + result + '_';
-        }
-    } else if (newPrefix === '~' && newSuffix === '~') {
-        // Adding strikethrough
-        result = '~' + result + '~';
-    }
-    
-    // Re-apply any existing formatting that wasn't overwritten
-    if (hasBold && newPrefix !== '*') {
-        result = '*' + result + '*';
-    }
-    if (hasItalic && newPrefix !== '_') {
-        result = '_' + result + '_';
-    }
-    if (hasStrike && newPrefix !== '~') {
-        result = '~' + result + '~';
-    }
-    
-    return result;
-}
-
 function convertTelegramToWhatsApp(text, entities) {
     if (!text) return text;
     
@@ -270,41 +201,6 @@ function convertTelegramToWhatsApp(text, entities) {
     
     // If we have entities, use them for accurate formatting
     if (entities && entities.length > 0) {
-        // Sort entities by offset (ascending)
-        const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
-        
-        // Process entities in reverse order to avoid position shifting (like Python script)
-        // But we'll use a different approach: build an array of segments
-        
-        // First, create an array of text segments with their formatting
-        let segments = [];
-        let lastIndex = 0;
-        
-        // Create a map of entity types per position
-        const entityMap = new Map();
-        
-        // First pass: collect all formatting for each position
-        for (const entity of sortedEntities) {
-            const start = entity.offset;
-            const end = start + entity.length;
-            const type = entity.className;
-            
-            // For blockquote, we don't add formatting, just mark the range
-            if (type === 'MessageEntityBlockquote') {
-                continue; // Skip blockquote for now, handle separately
-            }
-            
-            // Store formatting info for this range
-            if (!entityMap.has(start)) {
-                entityMap.set(start, []);
-            }
-            if (!entityMap.has(end)) {
-                entityMap.set(end, []);
-            }
-            
-            // We'll process formatting in reverse order later like Python script
-        }
-        
         // Python-style: Sort entities by offset in reverse order
         const reversedEntities = [...entities].sort((a, b) => b.offset - a.offset);
         
@@ -346,18 +242,6 @@ function convertTelegramToWhatsApp(text, entities) {
             }
             
             // EXACT Python line-by-line wrapping logic
-            // if entity.type == MessageEntity.PRE:
-            //     replacement = f"{prefix}{content}{suffix}"
-            // else:
-            //     lines = content.split('\n')
-            //     wrapped_lines = []
-            //     for line in lines:
-            //         if line.strip():
-            //             wrapped_lines.append(f"{prefix}{line.strip()}{suffix}")
-            //         else:
-            //             wrapped_lines.append('')
-            //     replacement = '\n'.join(wrapped_lines)
-            
             let replacement;
             if (type === 'MessageEntityPre') {
                 // PRE formatting - wrap entire content
@@ -383,10 +267,6 @@ function convertTelegramToWhatsApp(text, entities) {
         
         // Join the array back into a string
         let result = textArray.join('');
-        
-        // Now handle blockquotes - we need to remove blockquote markers but preserve inner formatting
-        // Blockquote in Telegram is just a marker, not actual formatting in the text
-        // So we don't need to do anything special - the content inside blockquote already has its formatting
         
         // Apply EXACT Python cleanup function
         const cleanedResult = cleanWhitespace(result);
@@ -421,6 +301,122 @@ function convertTelegramToWhatsApp(text, entities) {
     return formatted;
 }
 
+async function sendToWhatsApp(sock, messageData, targetType) {
+    try {
+        const config = loadConfig();
+        if (!config.whatsappNumber) {
+            log('ERROR', 'WhatsApp number not configured');
+            return false;
+        }
+        
+        const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
+            config.whatsappNumber :
+            `${config.whatsappNumber}@s.whatsapp.net`;
+        
+        let targets = [];
+        
+        // Determine targets based on user choice
+        switch (targetType) {
+            case 'own':
+                targets = [whatsappJid];
+                break;
+            case 'group':
+                // Add all WhatsApp groups from Python script
+                targets = WHATSAPP_GROUPS.map(group => 
+                    group.includes('@g.us') ? group : `${group}@g.us`
+                );
+                break;
+            case 'cancel':
+                log('INFO', 'Message sending cancelled by user');
+                return false;
+            default:
+                log('ERROR', 'Invalid target type', { targetType });
+                return false;
+        }
+        
+        log('INFO', `Sending to ${targets.length} targets`, { targetType });
+        
+        // Send to each target
+        for (const target of targets) {
+            if (messageData.type === 'text') {
+                await sock.sendMessage(target, { text: messageData.content });
+                log('INFO', 'Text message sent to WhatsApp', { 
+                    target,
+                    textLength: messageData.content.length 
+                });
+            } else if (messageData.type === 'media') {
+                if (messageData.mediaType === 'photo') {
+                    await sock.sendMessage(target, {
+                        image: messageData.buffer,
+                        caption: messageData.caption
+                    });
+                } else if (messageData.mediaType === 'video') {
+                    await sock.sendMessage(target, {
+                        video: messageData.buffer,
+                        caption: messageData.caption
+                    });
+                } else if (messageData.mediaType === 'document') {
+                    await sock.sendMessage(target, {
+                        document: messageData.buffer,
+                        fileName: messageData.fileName,
+                        caption: messageData.caption
+                    });
+                } else if (messageData.mediaType === 'audio') {
+                    await sock.sendMessage(target, {
+                        audio: messageData.buffer,
+                        caption: messageData.caption
+                    });
+                } else if (messageData.mediaType === 'voice') {
+                    await sock.sendMessage(target, {
+                        audio: messageData.buffer,
+                        ptt: true
+                    });
+                } else if (messageData.mediaType === 'sticker') {
+                    await sock.sendMessage(target, {
+                        sticker: messageData.buffer
+                    });
+                }
+                log('INFO', `${messageData.mediaType} sent to WhatsApp`, { target });
+            }
+        }
+        
+        return true;
+    } catch (error) {
+        log('ERROR', 'Failed to send to WhatsApp', { error: error.message });
+        return false;
+    }
+}
+
+async function handleConfirmation(sock, chatId, messageId, userChoice) {
+    const pendingKey = `${chatId}_${messageId}`;
+    const messageData = pendingMessages.get(pendingKey);
+    
+    if (!messageData) {
+        log('ERROR', 'No pending message found', { chatId, messageId });
+        await sock.sendMessage(chatId, { text: '❌ This message has expired or already processed.' });
+        return;
+    }
+    
+    // Remove from pending
+    pendingMessages.delete(pendingKey);
+    
+    // Handle cancel
+    if (userChoice === 'cancel') {
+        await sock.sendMessage(chatId, { text: '❌ Message sending cancelled.' });
+        return;
+    }
+    
+    // Send to WhatsApp
+    const success = await sendToWhatsApp(sock, messageData, userChoice);
+    
+    if (success) {
+        const targetText = userChoice === 'own' ? 'your own chat' : 'all groups';
+        await sock.sendMessage(chatId, { text: `✅ Message forwarded to WhatsApp (${targetText})` });
+    } else {
+        await sock.sendMessage(chatId, { text: '❌ Failed to forward message to WhatsApp' });
+    }
+}
+
 async function startTelegramBot(sock, chatId) {
     const config = loadConfig();
     
@@ -438,12 +434,6 @@ async function startTelegramBot(sock, chatId) {
 
     try {
         if (telegramClient) await telegramClient.disconnect();
-        
-        const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
-            config.whatsappNumber :
-            `${config.whatsappNumber}@s.whatsapp.net`;
-        
-        log('INFO', 'WhatsApp JID configured', { whatsappJid });
         
         telegramClient = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
             connectionRetries: 5,
@@ -494,113 +484,106 @@ async function startTelegramBot(sock, chatId) {
                 // Convert formatting for WhatsApp
                 const formattedText = convertTelegramToWhatsApp(text, entities);
                 
-                log('INFO', 'Preparing to send to WhatsApp', {
+                log('INFO', 'Preparing message for confirmation', {
                     originalTextLength: text.length,
                     formattedTextLength: formattedText.length,
-                    originalTextPreview: text.substring(0, 100) + '...',
-                    formattedTextPreview: formattedText.substring(0, 100) + '...',
                     hasMedia: !!msg.media
                 });
                 
-                // TEXT ONLY - send with formatting
-                if (!msg.media) {
-                    await sock.sendMessage(whatsappJid, { text: formattedText });
-                    log('INFO', 'Text message sent to WhatsApp', { 
-                        textLength: formattedText.length,
-                        textPreview: formattedText.substring(0, 100) + '...'
-                    });
-                    return;
-                }
+                // Prepare message data for pending storage
+                let messageData = {
+                    type: 'text',
+                    content: formattedText,
+                    timestamp: Date.now()
+                };
                 
-                // For media messages, ensure connection is ready
-                if (!connectionReady) {
-                    log('WARN', 'Connection not ready yet, waiting...');
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                }
-                
-                // MEDIA WITH CAPTION
-                log('DEBUG', 'Downloading media', { messageId: msg.id });
-                
-                // Add small delay before downloading to ensure connection
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                
-                const buffer = await downloadMedia(telegramClient, msg);
-                
-                if (!buffer || buffer.length === 0) {
-                    log('ERROR', 'Failed to download media or empty buffer', { messageId: msg.id });
-                    // Still send text-only if media fails
-                    if (formattedText) {
-                        await sock.sendMessage(whatsappJid, { text: formattedText });
-                        log('INFO', 'Sent as text message instead (media failed)', { 
-                            textLength: formattedText.length 
-                        });
+                // If media, download it
+                if (msg.media) {
+                    // For media messages, ensure connection is ready
+                    if (!connectionReady) {
+                        log('WARN', 'Connection not ready yet, waiting...');
+                        await new Promise(resolve => setTimeout(resolve, 2000));
                     }
-                    return;
+                    
+                    log('DEBUG', 'Downloading media for confirmation', { messageId: msg.id });
+                    
+                    // Add small delay before downloading
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    const buffer = await downloadMedia(telegramClient, msg);
+                    
+                    if (!buffer || buffer.length === 0) {
+                        log('ERROR', 'Failed to download media', { messageId: msg.id });
+                        await sock.sendMessage(chatId, { 
+                            text: '❌ Failed to download media. Please try again.' 
+                        });
+                        return;
+                    }
+                    
+                    // Prepare media message data
+                    messageData = {
+                        type: 'media',
+                        mediaType: msg.photo ? 'photo' : 
+                                   msg.video ? 'video' :
+                                   msg.document ? 'document' :
+                                   msg.audio ? 'audio' :
+                                   msg.voice ? 'voice' :
+                                   msg.sticker ? 'sticker' : 'unknown',
+                        buffer: buffer,
+                        caption: formattedText,
+                        timestamp: Date.now()
+                    };
+                    
+                    if (msg.document) {
+                        messageData.fileName = msg.document.attributes
+                            .find(a => a.className === 'DocumentAttributeFilename')?.fileName || 'file';
+                    }
                 }
                 
-                log('DEBUG', 'Media downloaded successfully', { 
-                    messageId: msg.id,
-                    bufferSize: buffer.length 
+                // Store in pending messages
+                const pendingKey = `${chatId}_${msg.id}`;
+                pendingMessages.set(pendingKey, messageData);
+                
+                // Auto-cleanup old pending messages (older than 5 minutes)
+                const now = Date.now();
+                for (const [key, data] of pendingMessages.entries()) {
+                    if (now - data.timestamp > 300000) { // 5 minutes
+                        pendingMessages.delete(key);
+                    }
+                }
+                
+                // Create inline keyboard for confirmation
+                const keyboard = [
+                    [
+                        { text: '📱 Own Chat', callbackData: `confirm_${msg.id}_own` },
+                        { text: '👥 Groups', callbackData: `confirm_${msg.id}_group` }
+                    ],
+                    [
+                        { text: '❌ Cancel', callbackData: `confirm_${msg.id}_cancel` }
+                    ]
+                ];
+                
+                // Send confirmation message with preview
+                const previewText = formattedText.length > 100 ? 
+                    formattedText.substring(0, 100) + '...' : 
+                    formattedText;
+                
+                const confirmationMessage = 
+                    `📨 *New message received*\n\n` +
+                    `Preview:\n${previewText}\n\n` +
+                    `Type: ${msg.media ? 'Media with caption' : 'Text'}\n` +
+                    `Length: ${formattedText.length} characters\n\n` +
+                    `Where would you like to forward this to WhatsApp?`;
+                
+                await sock.sendMessage(chatId, {
+                    text: confirmationMessage,
+                    buttons: keyboard
                 });
                 
-                if (msg.photo) {
-                    await sock.sendMessage(whatsappJid, {
-                        image: buffer,
-                        caption: formattedText
-                    });
-                    log('INFO', 'Photo sent to WhatsApp with caption', { 
-                        captionLength: formattedText.length,
-                        captionPreview: formattedText.substring(0, 100) + '...'
-                    });
-                }
-                else if (msg.video) {
-                    await sock.sendMessage(whatsappJid, {
-                        video: buffer,
-                        caption: formattedText
-                    });
-                    log('INFO', 'Video sent to WhatsApp with caption', { 
-                        captionLength: formattedText.length,
-                        captionPreview: formattedText.substring(0, 100) + '...'
-                    });
-                }
-                else if (msg.document) {
-                    const fileName = msg.document.attributes
-                        .find(a => a.className === 'DocumentAttributeFilename')?.fileName || 'file';
-                    
-                    await sock.sendMessage(whatsappJid, {
-                        document: buffer,
-                        fileName: fileName,
-                        caption: formattedText
-                    });
-                    log('INFO', 'Document sent to WhatsApp', { 
-                        fileName, 
-                        captionLength: formattedText.length,
-                        captionPreview: formattedText.substring(0, 100) + '...'
-                    });
-                }
-                else if (msg.audio) {
-                    await sock.sendMessage(whatsappJid, {
-                        audio: buffer,
-                        caption: formattedText
-                    });
-                    log('INFO', 'Audio sent to WhatsApp', { 
-                        captionLength: formattedText.length,
-                        captionPreview: formattedText.substring(0, 100) + '...'
-                    });
-                }
-                else if (msg.voice) {
-                    await sock.sendMessage(whatsappJid, {
-                        audio: buffer,
-                        ptt: true
-                    });
-                    log('INFO', 'Voice message sent to WhatsApp');
-                }
-                else if (msg.sticker) {
-                    await sock.sendMessage(whatsappJid, {
-                        sticker: buffer
-                    });
-                    log('INFO', 'Sticker sent to WhatsApp');
-                }
+                log('INFO', 'Confirmation request sent to user', { 
+                    messageId: msg.id,
+                    hasMedia: !!msg.media 
+                });
                 
             } catch (err) {
                 log('ERROR', 'Message handler error', { 
@@ -617,7 +600,7 @@ async function startTelegramBot(sock, chatId) {
         config.active = true;
         saveConfig(config);
         
-        await sock.sendMessage(chatId, { text: '✅ Bridge active' });
+        await sock.sendMessage(chatId, { text: '✅ Bridge active - You will be asked for confirmation before forwarding to WhatsApp' });
         log('INFO', 'Bridge started successfully');
         return true;
         
@@ -631,6 +614,26 @@ async function startTelegramBot(sock, chatId) {
     }
 }
 
+async function handleButtonClick(sock, buttonData, chatId) {
+    try {
+        // Button data format: confirm_messageId_target
+        const parts = buttonData.split('_');
+        if (parts.length !== 3 || parts[0] !== 'confirm') {
+            log('ERROR', 'Invalid button data', { buttonData });
+            return;
+        }
+        
+        const messageId = parts[1];
+        const target = parts[2];
+        
+        await handleConfirmation(sock, chatId, messageId, target);
+        
+    } catch (error) {
+        log('ERROR', 'Button handler error', { error: error.message });
+        await sock.sendMessage(chatId, { text: '❌ Failed to process your selection' });
+    }
+}
+
 async function telegramCommand(sock, chatId, message, args) {
     const sub = args[0]?.toLowerCase();
     const config = loadConfig();
@@ -639,7 +642,7 @@ async function telegramCommand(sock, chatId, message, args) {
     
     if (!sub) {
         await sock.sendMessage(chatId, { 
-            text: `📊 Status\nActive: ${isActive ? '✅' : '❌'}\nToken: ${config.botToken ? '✅' : '❌'}\nWhatsApp: ${config.whatsappNumber || 'Not set'}\n\nCommands:\n.on - Start\n.off - Stop\n.settoken TOKEN\n.setwa NUMBER`
+            text: `📊 Status\nActive: ${isActive ? '✅' : '❌'}\nToken: ${config.botToken ? '✅' : '❌'}\nWhatsApp: ${config.whatsappNumber || 'Not set'}\nGroups: ${WHATSAPP_GROUPS.length}\n\nCommands:\n.on - Start\n.off - Stop\n.settoken TOKEN\n.setwa NUMBER`
         });
         return;
     }
@@ -654,6 +657,7 @@ async function telegramCommand(sock, chatId, message, args) {
             connectionReady = false;
             config.active = false;
             saveConfig(config);
+            pendingMessages.clear(); // Clear pending messages
             await sock.sendMessage(chatId, { text: '🔴 Stopped' });
             log('INFO', 'Bridge stopped');
             break;
@@ -682,5 +686,6 @@ async function setWaCommand(sock, chatId, message, number) {
 module.exports = {
     telegramCommand,
     setTokenCommand,
-    setWaCommand
+    setWaCommand,
+    handleButtonClick
 };
