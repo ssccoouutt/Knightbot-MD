@@ -2,6 +2,7 @@ const { Telegraf } = require('telegraf');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const { NewMessage } = require('telegram/events');
+const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
@@ -36,18 +37,66 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-async function initTelegramClient(sessionString) {
-    const stringSession = new StringSession(sessionString);
-    const client = new TelegramClient(stringSession, API_ID, API_HASH, {
-        connectionRetries: 5,
-        baseDc: 2
-    });
-    
-    console.log('🔄 Connecting to Telegram...');
-    await client.connect();
-    console.log('✅ Telegram client connected!');
-    
-    return client;
+// Download file from Telegram using bot token (up to 20MB)
+async function downloadTelegramFile(fileId, botToken) {
+    try {
+        const fileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`;
+        const response = await axios.get(fileUrl);
+        const filePath = response.data.result.file_path;
+        
+        const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+        const fileResponse = await axios({
+            method: 'GET',
+            url: downloadUrl,
+            responseType: 'arraybuffer',
+            timeout: 60000
+        });
+        
+        return Buffer.from(fileResponse.data);
+    } catch (error) {
+        console.error('Download error:', error.message);
+        return null;
+    }
+}
+
+// Download file using Telethon client (up to 2GB)
+async function downloadTelegramFileWithClient(client, message) {
+    try {
+        const tempFile = path.join(TEMP_DIR, `telegram_${Date.now()}_${message.id}`);
+        
+        await client.downloadMedia(message, {
+            progressCallback: (downloaded, total) => {
+                const percent = Math.round((downloaded / total) * 100);
+                if (percent % 10 === 0) console.log(`Download progress: ${percent}%`);
+            },
+            outputFile: tempFile
+        });
+        
+        const buffer = fs.readFileSync(tempFile);
+        fs.unlinkSync(tempFile);
+        return buffer;
+    } catch (error) {
+        console.error('Download error:', error);
+        return null;
+    }
+}
+
+// Get file extension from mime type
+function getExtension(mimeType) {
+    const map = {
+        'image/jpeg': '.jpg',
+        'image/png': '.png',
+        'image/gif': '.gif',
+        'image/webp': '.webp',
+        'video/mp4': '.mp4',
+        'video/quicktime': '.mov',
+        'audio/mpeg': '.mp3',
+        'audio/ogg': '.ogg',
+        'application/pdf': '.pdf',
+        'application/zip': '.zip',
+        'text/plain': '.txt'
+    };
+    return map[mimeType] || '.bin';
 }
 
 async function startTelegramBot(sock, chatId) {
@@ -55,112 +104,189 @@ async function startTelegramBot(sock, chatId) {
     
     if (!config.token && !config.sessionString) {
         await sock.sendMessage(chatId, { 
-            text: '❌ Set Telegram bot token or session string first:\n`.settoken TOKEN`\n`.setsession SESSION_STRING`' 
+            text: '❌ Set Telegram token or session first:\n`.settoken TOKEN`\n`.setsession SESSION`' 
         });
         return false;
     }
     
     if (!config.whatsappNumber) {
-        await sock.sendMessage(chatId, { text: '❌ Set WhatsApp number first: `.setwa YOUR_NUMBER`' });
+        await sock.sendMessage(chatId, { text: '❌ Set WhatsApp number first: `.setwa NUMBER`' });
         return false;
     }
 
     try {
-        // Stop any existing instances
-        if (telegramBot) {
-            await telegramBot.stop();
-            telegramBot = null;
-        }
-        if (telegramClient) {
-            await telegramClient.disconnect();
-            telegramClient = null;
-        }
+        if (telegramBot) await telegramBot.stop();
+        if (telegramClient) await telegramClient.disconnect();
         
         await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Use BOT TOKEN for receiving messages
+        const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
+            config.whatsappNumber :
+            `${config.whatsappNumber}@s.whatsapp.net`;
+        
+        // BOT TOKEN HANDLER (20MB limit)
         if (config.token) {
             telegramBot = new Telegraf(config.token);
             
             telegramBot.on('message', async (ctx) => {
                 try {
-                    const message = ctx.message;
+                    const msg = ctx.message;
+                    if (msg.text && msg.text.startsWith('/')) return;
                     
-                    // Skip commands
-                    if (message.text && message.text.startsWith('/')) return;
+                    const caption = msg.caption || '';
                     
-                    const text = message.text || message.caption || '';
-                    if (!text.trim()) return;
+                    // TEXT
+                    if (msg.text) {
+                        await sock.sendMessage(whatsappJid, { 
+                            text: `📨 *Bot:*\n\n${msg.text}`
+                        });
+                        console.log(`✅ Text forwarded`);
+                    }
                     
-                    console.log(`📨 Received from Telegram bot: ${text.substring(0, 50)}...`);
+                    // PHOTO
+                    else if (msg.photo) {
+                        const photo = msg.photo[msg.photo.length - 1];
+                        const buffer = await downloadTelegramFile(photo.file_id, config.token);
+                        if (buffer) {
+                            await sock.sendMessage(whatsappJid, {
+                                image: buffer,
+                                caption: caption ? `📨 *Bot:*\n\n📝 ${caption}` : `📨 *Bot:*`
+                            });
+                            console.log(`✅ Photo forwarded`);
+                        }
+                    }
                     
-                    const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
-                        config.whatsappNumber :
-                        `${config.whatsappNumber}@s.whatsapp.net`;
+                    // VIDEO
+                    else if (msg.video) {
+                        const buffer = await downloadTelegramFile(msg.video.file_id, config.token);
+                        if (buffer) {
+                            await sock.sendMessage(whatsappJid, {
+                                video: buffer,
+                                caption: caption ? `📨 *Bot:*\n\n📝 ${caption}` : `📨 *Bot:*`
+                            });
+                            console.log(`✅ Video forwarded`);
+                        }
+                    }
                     
-                    await sock.sendMessage(whatsappJid, { 
-                        text: `📨 *Telegram Bot:*\n\n${text}`
-                    });
+                    // DOCUMENT
+                    else if (msg.document) {
+                        const buffer = await downloadTelegramFile(msg.document.file_id, config.token);
+                        if (buffer) {
+                            await sock.sendMessage(whatsappJid, {
+                                document: buffer,
+                                fileName: msg.document.file_name || 'file',
+                                caption: caption ? `📨 *Bot:*\n\n📝 ${caption}` : `📨 *Bot:*`
+                            });
+                            console.log(`✅ Document forwarded`);
+                        }
+                    }
                     
-                    console.log(`✅ Forwarded to WhatsApp`);
+                    // AUDIO
+                    else if (msg.audio) {
+                        const buffer = await downloadTelegramFile(msg.audio.file_id, config.token);
+                        if (buffer) {
+                            await sock.sendMessage(whatsappJid, {
+                                audio: buffer,
+                                caption: caption ? `📨 *Bot:*\n\n📝 ${caption}` : `📨 *Bot:*`
+                            });
+                            console.log(`✅ Audio forwarded`);
+                        }
+                    }
+                    
+                    // VOICE
+                    else if (msg.voice) {
+                        const buffer = await downloadTelegramFile(msg.voice.file_id, config.token);
+                        if (buffer) {
+                            await sock.sendMessage(whatsappJid, {
+                                audio: buffer,
+                                ptt: true,
+                                caption: caption ? `📨 *Bot:*\n\n📝 ${caption}` : `📨 *Bot:*`
+                            });
+                            console.log(`✅ Voice forwarded`);
+                        }
+                    }
+                    
+                    // STICKER
+                    else if (msg.sticker) {
+                        const buffer = await downloadTelegramFile(msg.sticker.file_id, config.token);
+                        if (buffer) {
+                            await sock.sendMessage(whatsappJid, {
+                                sticker: buffer
+                            });
+                            console.log(`✅ Sticker forwarded`);
+                        }
+                    }
+                    
+                    // LOCATION
+                    else if (msg.location) {
+                        const { latitude, longitude } = msg.location;
+                        await sock.sendMessage(whatsappJid, {
+                            text: `📍 *Bot Location:*\n${latitude}, ${longitude}\nhttps://maps.google.com/?q=${latitude},${longitude}`
+                        });
+                        console.log(`✅ Location forwarded`);
+                    }
+                    
+                    // CONTACT
+                    else if (msg.contact) {
+                        await sock.sendMessage(whatsappJid, {
+                            text: `👤 *Bot Contact:*\nName: ${msg.contact.first_name} ${msg.contact.last_name || ''}\nPhone: ${msg.contact.phone_number}`
+                        });
+                        console.log(`✅ Contact forwarded`);
+                    }
                     
                 } catch (err) {
-                    console.error('Error in bot message handler:', err);
+                    console.error('Bot handler error:', err);
                 }
             });
             
             await telegramBot.launch();
-            console.log('✅ Telegram bot started');
-            
-            await sock.sendMessage(chatId, { 
-                text: `✅ *Telegram Bot Active*\n🤖 Using bot token\n📱 Forwarding to: ${config.whatsappNumber}` 
-            });
+            console.log('✅ Bot handler started');
         }
         
-        // Use SESSION STRING for 2GB file downloads (optional)
+        // SESSION STRING HANDLER (2GB limit)
         if (config.sessionString) {
-            telegramClient = await initTelegramClient(config.sessionString);
+            const stringSession = new StringSession(config.sessionString);
+            telegramClient = new TelegramClient(stringSession, API_ID, API_HASH, {
+                connectionRetries: 5
+            });
             
-            async function messageHandler(event) {
+            await telegramClient.connect();
+            console.log('✅ User client connected');
+            
+            async function userHandler(event) {
                 try {
-                    const message = event.message;
-                    if (!message || !message.text) return;
+                    const msg = event.message;
+                    if (!msg || !msg.text) return;
                     
-                    const text = message.text;
-                    if (text.startsWith('/') || !text.trim()) return;
-                    
-                    console.log(`📨 Received from Telegram user: ${text.substring(0, 50)}...`);
-                    
-                    const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
-                        config.whatsappNumber :
-                        `${config.whatsappNumber}@s.whatsapp.net`;
+                    const text = msg.text;
+                    if (text.startsWith('/')) return;
                     
                     await sock.sendMessage(whatsappJid, { 
-                        text: `📨 *Telegram User:*\n\n${text}`
+                        text: `📨 *User:*\n\n${text}`
                     });
-                    
-                    console.log(`✅ Forwarded to WhatsApp`);
+                    console.log(`✅ User message forwarded`);
                     
                 } catch (err) {
-                    console.error('Error in user message handler:', err);
+                    console.error('User handler error:', err);
                 }
             }
             
-            telegramClient.addEventHandler(messageHandler, new NewMessage({}));
-            console.log('✅ Telegram user client started');
+            telegramClient.addEventHandler(userHandler, new NewMessage({}));
         }
         
         isActive = true;
         config.active = true;
         saveConfig(config);
         
+        await sock.sendMessage(chatId, { 
+            text: `✅ *Bridge Active*\n📱 To: ${config.whatsappNumber}` 
+        });
+        
         return true;
         
     } catch (error) {
-        console.error('Telegram bot error:', error);
-        await sock.sendMessage(chatId, { 
-            text: `❌ Failed: ${error.message}` 
-        });
+        console.error('Start error:', error);
+        await sock.sendMessage(chatId, { text: `❌ Failed: ${error.message}` });
         return false;
     }
 }
@@ -173,14 +299,14 @@ async function telegramCommand(sock, chatId, message, args) {
         const config = loadConfig();
         let status = `📊 *Telegram Bridge*\n\n`;
         status += `Active: ${isActive ? '✅' : '❌'}\n`;
-        status += `Bot Token: ${config.token ? '✅' : '❌'}\n`;
-        status += `Session: ${config.sessionString ? '✅ (2GB support)' : '❌'}\n`;
+        status += `Token: ${config.token ? '✅' : '❌'}\n`;
+        status += `Session: ${config.sessionString ? '✅ (2GB)' : '❌'}\n`;
         status += `WhatsApp: ${config.whatsappNumber || 'Not set'}\n\n`;
         status += `Commands:\n`;
         status += `• .telegram on - Start\n`;
         status += `• .telegram off - Stop\n`;
         status += `• .settoken TOKEN\n`;
-        status += `• .setsession SESSION_STRING\n`;
+        status += `• .setsession SESSION\n`;
         status += `• .setwa NUMBER`;
         
         await sock.sendMessage(chatId, { text: status });
@@ -190,67 +316,50 @@ async function telegramCommand(sock, chatId, message, args) {
     switch (subCommand) {
         case 'on':
         case 'start':
-        case 'activate':
             await startTelegramBot(sock, chatId);
             break;
             
         case 'off':
         case 'stop':
-        case 'deactivate':
             if (telegramBot) await telegramBot.stop();
             if (telegramClient) await telegramClient.disconnect();
             isActive = false;
             const config = loadConfig();
             config.active = false;
             saveConfig(config);
-            await sock.sendMessage(chatId, { text: '🔴 *Telegram Bridge Stopped*' });
+            await sock.sendMessage(chatId, { text: '🔴 *Bridge Stopped*' });
             break;
             
         default:
-            await sock.sendMessage(chatId, { 
-                text: 'Use: .telegram on / off' 
-            });
+            await sock.sendMessage(chatId, { text: 'Use: .telegram on / off' });
     }
 }
 
 async function setTokenCommand(sock, chatId, message, token) {
-    if (!token) {
-        await sock.sendMessage(chatId, { text: '❌ Provide token: `.settoken 123456:ABCdef`' });
-        return;
-    }
+    if (!token) return await sock.sendMessage(chatId, { text: '❌ Provide token' });
     
     const config = loadConfig();
     config.token = token;
     saveConfig(config);
-    
-    await sock.sendMessage(chatId, { text: '✅ Bot token saved!' });
+    await sock.sendMessage(chatId, { text: '✅ Token saved!' });
 }
 
 async function setSessionCommand(sock, chatId, message, sessionString) {
-    if (!sessionString) {
-        await sock.sendMessage(chatId, { text: '❌ Provide session string: `.setsession YOUR_SESSION_STRING`' });
-        return;
-    }
+    if (!sessionString) return await sock.sendMessage(chatId, { text: '❌ Provide session' });
     
     const config = loadConfig();
     config.sessionString = sessionString;
     saveConfig(config);
-    
-    await sock.sendMessage(chatId, { text: '✅ Session string saved! (2GB file support enabled)' });
+    await sock.sendMessage(chatId, { text: '✅ Session saved! (2GB support)' });
 }
 
 async function setWaCommand(sock, chatId, message, number) {
-    if (!number) {
-        await sock.sendMessage(chatId, { text: '❌ Provide number: `.setwa 923247220362`' });
-        return;
-    }
+    if (!number) return await sock.sendMessage(chatId, { text: '❌ Provide number' });
     
     const cleanNumber = number.replace(/[^0-9]/g, '');
-    
     const config = loadConfig();
     config.whatsappNumber = cleanNumber;
     saveConfig(config);
-    
     await sock.sendMessage(chatId, { text: `✅ WhatsApp set: ${cleanNumber}` });
 }
 
