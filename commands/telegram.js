@@ -32,16 +32,15 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
+// EXACT PATTERN FROM YOUR PYTHON SCRIPT
 function clean_whatsapp_text(text, entities) {
     if (!text) return text;
     
-    // Get the plain text by removing markdown
-    let plainText = text;
+    // Build plain text by extracting content without markdown
+    let result = [];
+    let lastPos = 0;
+    
     if (entities && entities.length > 0) {
-        // Build plain text by extracting content without markdown
-        let result = [];
-        let lastPos = 0;
-        
         const sorted = [...entities].sort((a, b) => a.offset - b.offset);
         
         for (const entity of sorted) {
@@ -51,24 +50,24 @@ function clean_whatsapp_text(text, entities) {
             }
             
             // Get the content WITHOUT the markdown (just the inner text)
-            const content = text.substring(entity.offset, entity.offset + entity.length);
-            const plainContent = content.replace(/[*_~`]/g, ''); // Remove markdown chars
+            // For **Hi**, content is "Hi" (without the **)
+            const content = text.substring(entity.offset + 2, entity.offset + entity.length - 2);
             
-            // Apply WhatsApp formatting
+            // Apply WhatsApp formatting exactly like Python
             if (entity.className === 'MessageEntityBold') {
-                result.push(`*${plainContent}*`);
+                result.push(`*${content}*`);
             }
             else if (entity.className === 'MessageEntityItalic') {
-                result.push(`_${plainContent}_`);
+                result.push(`_${content}_`);
             }
             else if (entity.className === 'MessageEntityStrike') {
-                result.push(`~${plainContent}~`);
+                result.push(`~${content}~`);
             }
             else if (entity.className === 'MessageEntityCode' || entity.className === 'MessageEntityPre') {
-                result.push(`\`\`\`${plainContent}\`\`\``);
+                result.push(`\`\`\`${content}\`\`\``);
             }
             else {
-                result.push(plainContent);
+                result.push(content);
             }
             
             lastPos = entity.offset + entity.length;
@@ -78,11 +77,12 @@ function clean_whatsapp_text(text, entities) {
         if (lastPos < text.length) {
             result.push(text.substring(lastPos));
         }
-        
-        return result.join('');
+    } else {
+        // No entities - return as is
+        return text;
     }
     
-    return text;
+    return result.join('');
 }
 
 async function downloadMedia(client, message) {
