@@ -15,9 +15,8 @@ let isActive = false;
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 // ===== CONFIGURATION =====
-// YOU MUST REPLACE THESE WITH YOUR ACTUAL VALUES FROM my.telegram.org
-const API_ID = 32086282; // Your API ID from Python script
-const API_HASH = "064a66fe7097452e6ac8f4e8df28aa97"; // Your API Hash from Python script
+const API_ID = 32086282; // Your API ID
+const API_HASH = "064a66fe7097452e6ac8f4e8df28aa97"; // Your API Hash
 
 function loadConfig() {
     try {
@@ -38,12 +37,25 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// Download file using Telethon client (up to 2GB)
-async function downloadTelegramFileWithClient(client, message) {
+// Download file using Telethon client (up to 2GB) - THIS IS THE FIX!
+async function downloadTelegramFileWithClient(client, messageId, chatId) {
     try {
-        const tempFile = path.join(TEMP_DIR, `telegram_${Date.now()}_${message.id}`);
+        console.log(`📥 Downloading media using user client...`);
         
-        console.log(`📥 Downloading media via user client...`);
+        // Get the message first
+        const messages = await client.getMessages(chatId, { ids: messageId });
+        if (!messages || messages.length === 0) {
+            console.log('Message not found');
+            return null;
+        }
+        
+        const message = messages[0];
+        if (!message.media) {
+            console.log('No media in message');
+            return null;
+        }
+        
+        const tempFile = path.join(TEMP_DIR, `telegram_${Date.now()}_${messageId}`);
         
         await client.downloadMedia(message, {
             progressCallback: (downloaded, total) => {
@@ -58,37 +70,16 @@ async function downloadTelegramFileWithClient(client, message) {
         console.log(`✅ Download complete: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`);
         return buffer;
     } catch (error) {
-        console.error('Download error:', error);
+        console.error('Download error with client:', error);
         return null;
     }
 }
 
-// Download file using bot token (up to 20MB)
-async function downloadTelegramFile(fileId, botToken) {
-    try {
-        const fileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`;
-        const response = await axios.get(fileUrl);
-        const filePath = response.data.result.file_path;
-        const fileSize = response.data.result.file_size;
-        
-        if (fileSize > 20 * 1024 * 1024) {
-            console.log(`⚠️ File too large for bot API: ${(fileSize/1024/1024).toFixed(2)}MB`);
-            return null;
-        }
-        
-        const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
-        const fileResponse = await axios({
-            method: 'GET',
-            url: downloadUrl,
-            responseType: 'arraybuffer',
-            timeout: 60000
-        });
-        
-        return Buffer.from(fileResponse.data);
-    } catch (error) {
-        console.error('Download error:', error.message);
-        return null;
-    }
+// Helper to extract chat ID and message ID from context
+function extractMessageInfo(ctx) {
+    const chatId = ctx.chat.id;
+    const messageId = ctx.message.message_id;
+    return { chatId, messageId };
 }
 
 async function startTelegramBot(sock, chatId) {
@@ -97,6 +88,13 @@ async function startTelegramBot(sock, chatId) {
     if (!config.botToken) {
         await sock.sendMessage(chatId, { 
             text: '❌ Set bot token first: `.settoken YOUR_BOT_TOKEN`' 
+        });
+        return false;
+    }
+    
+    if (!config.sessionString) {
+        await sock.sendMessage(chatId, { 
+            text: '❌ Session string required for media downloads! Use `.setsession YOUR_SESSION`' 
         });
         return false;
     }
@@ -116,7 +114,17 @@ async function startTelegramBot(sock, chatId) {
             config.whatsappNumber :
             `${config.whatsappNumber}@s.whatsapp.net`;
         
-        // ===== 1. START BOT TOKEN HANDLER (Receives messages) =====
+        // ===== 1. CONNECT USER CLIENT FIRST (for downloads) =====
+        console.log('🔄 Connecting user client...');
+        const stringSession = new StringSession(config.sessionString);
+        telegramClient = new TelegramClient(stringSession, API_ID, API_HASH, {
+            connectionRetries: 5
+        });
+        
+        await telegramClient.connect();
+        console.log('✅ User client connected (2GB support)');
+        
+        // ===== 2. START BOT TOKEN HANDLER (Receives messages) =====
         telegramBot = new Telegraf(config.botToken);
         
         telegramBot.on('message', async (ctx) => {
@@ -127,88 +135,108 @@ async function startTelegramBot(sock, chatId) {
                 if (msg.text && msg.text.startsWith('/')) return;
                 
                 const caption = msg.caption || '';
+                const { chatId: telegramChatId, messageId } = extractMessageInfo(ctx);
                 
-                console.log(`📨 Received message from Telegram bot`);
+                console.log(`📨 Received message from Telegram (chat: ${telegramChatId}, msg: ${messageId})`);
                 
                 // TEXT
                 if (msg.text) {
                     await sock.sendMessage(whatsappJid, { 
-                        text: `📨 *Telegram:*\n\n${msg.text}`
+                        text: `${msg.text}`
                     });
                     console.log(`✅ Text forwarded`);
                 }
                 
                 // PHOTO
                 else if (msg.photo) {
-                    const photo = msg.photo[msg.photo.length - 1];
-                    const buffer = await downloadTelegramFile(photo.file_id, config.botToken);
+                    console.log('📸 Downloading photo via user client...');
+                    const buffer = await downloadTelegramFileWithClient(telegramClient, messageId, telegramChatId);
                     if (buffer) {
                         await sock.sendMessage(whatsappJid, {
                             image: buffer,
-                            caption: caption ? `📨 *Telegram:*\n\n📝 ${caption}` : `📨 *Telegram:*`
+                            caption: caption || ''
                         });
                         console.log(`✅ Photo forwarded`);
-                    } else if (config.sessionString) {
-                        // File too large for bot API, but we have session string
+                    } else {
                         await sock.sendMessage(whatsappJid, { 
-                            text: `📨 *Telegram:*\n[Photo too large for bot API - needs session string handling]${caption ? `\n\n📝 ${caption}` : ''}`
+                            text: `[Photo]${caption ? `\n\n${caption}` : ''}`
                         });
                     }
                 }
                 
                 // VIDEO
                 else if (msg.video) {
-                    const buffer = await downloadTelegramFile(msg.video.file_id, config.botToken);
+                    console.log('🎥 Downloading video via user client...');
+                    const buffer = await downloadTelegramFileWithClient(telegramClient, messageId, telegramChatId);
                     if (buffer) {
                         await sock.sendMessage(whatsappJid, {
                             video: buffer,
-                            caption: caption ? `📨 *Telegram:*\n\n📝 ${caption}` : `📨 *Telegram:*`
+                            caption: caption || ''
                         });
                         console.log(`✅ Video forwarded`);
+                    } else {
+                        await sock.sendMessage(whatsappJid, { 
+                            text: `[Video]${caption ? `\n\n${caption}` : ''}`
+                        });
                     }
                 }
                 
                 // DOCUMENT
                 else if (msg.document) {
-                    const buffer = await downloadTelegramFile(msg.document.file_id, config.botToken);
+                    console.log(`📄 Downloading document via user client: ${msg.document.file_name}`);
+                    const buffer = await downloadTelegramFileWithClient(telegramClient, messageId, telegramChatId);
                     if (buffer) {
                         await sock.sendMessage(whatsappJid, {
                             document: buffer,
                             fileName: msg.document.file_name || 'file',
-                            caption: caption ? `📨 *Telegram:*\n\n📝 ${caption}` : `📨 *Telegram:*`
+                            caption: caption || ''
                         });
                         console.log(`✅ Document forwarded`);
+                    } else {
+                        await sock.sendMessage(whatsappJid, { 
+                            text: `[Document: ${msg.document.file_name}]${caption ? `\n\n${caption}` : ''}`
+                        });
                     }
                 }
                 
                 // AUDIO
                 else if (msg.audio) {
-                    const buffer = await downloadTelegramFile(msg.audio.file_id, config.botToken);
+                    console.log('🎵 Downloading audio via user client...');
+                    const buffer = await downloadTelegramFileWithClient(telegramClient, messageId, telegramChatId);
                     if (buffer) {
                         await sock.sendMessage(whatsappJid, {
                             audio: buffer,
-                            caption: caption ? `📨 *Telegram:*\n\n📝 ${caption}` : `📨 *Telegram:*`
+                            caption: caption || ''
                         });
                         console.log(`✅ Audio forwarded`);
+                    } else {
+                        await sock.sendMessage(whatsappJid, { 
+                            text: `[Audio]${caption ? `\n\n${caption}` : ''}`
+                        });
                     }
                 }
                 
                 // VOICE
                 else if (msg.voice) {
-                    const buffer = await downloadTelegramFile(msg.voice.file_id, config.botToken);
+                    console.log('🎤 Downloading voice via user client...');
+                    const buffer = await downloadTelegramFileWithClient(telegramClient, messageId, telegramChatId);
                     if (buffer) {
                         await sock.sendMessage(whatsappJid, {
                             audio: buffer,
-                            ptt: true,
-                            caption: caption ? `📨 *Telegram:*\n\n📝 ${caption}` : `📨 *Telegram:*`
+                            ptt: true
                         });
                         console.log(`✅ Voice forwarded`);
+                    } else {
+                        await sock.sendMessage(whatsappJid, { 
+                            text: '[Voice message]'
+                        });
                     }
                 }
                 
                 // STICKER
                 else if (msg.sticker) {
-                    const buffer = await downloadTelegramFile(msg.sticker.file_id, config.botToken);
+                    console.log('😊 Downloading sticker via user client...');
+                    const buffer = await downloadTelegramFileWithClient(telegramClient, messageId, telegramChatId);
                     if (buffer) {
                         await sock.sendMessage(whatsappJid, {
                             sticker: buffer
@@ -221,14 +249,14 @@ async function startTelegramBot(sock, chatId) {
                 else if (msg.location) {
                     const { latitude, longitude } = msg.location;
                     await sock.sendMessage(whatsappJid, {
-                        text: `📍 *Telegram Location:*\n${latitude}, ${longitude}\nhttps://maps.google.com/?q=${latitude},${longitude}`
+                        text: `📍 ${latitude}, ${longitude}\nhttps://maps.google.com/?q=${latitude},${longitude}`
                     });
                 }
                 
                 // CONTACT
                 else if (msg.contact) {
                     await sock.sendMessage(whatsappJid, {
-                        text: `👤 *Telegram Contact:*\nName: ${msg.contact.first_name} ${msg.contact.last_name || ''}\nPhone: ${msg.contact.phone_number}`
+                        text: `👤 ${msg.contact.first_name} ${msg.contact.last_name || ''}\n📱 ${msg.contact.phone_number}`
                     });
                 }
                 
@@ -240,32 +268,12 @@ async function startTelegramBot(sock, chatId) {
         await telegramBot.launch();
         console.log('✅ Bot handler started');
         
-        // ===== 2. START SESSION CLIENT (For 2GB downloads) =====
-        if (config.sessionString) {
-            try {
-                const stringSession = new StringSession(config.sessionString);
-                telegramClient = new TelegramClient(stringSession, API_ID, API_HASH, {
-                    connectionRetries: 5
-                });
-                
-                await telegramClient.connect();
-                console.log('✅ User client connected (2GB support)');
-                
-                // This handles messages from your USER account, not the bot
-                // You'll need to forward messages from your user to the bot
-                // For now, we'll just use it for large file downloads when needed
-                
-            } catch (err) {
-                console.error('Failed to connect user client:', err);
-            }
-        }
-        
         isActive = true;
         config.active = true;
         saveConfig(config);
         
         await sock.sendMessage(chatId, { 
-            text: `✅ *Bridge Active*\n📱 To: ${config.whatsappNumber}\n🤖 Bot: Active\n👤 User: ${config.sessionString ? 'Connected (2GB)' : 'Not connected'}` 
+            text: `✅ *Bridge Active*\n📱 To: ${config.whatsappNumber}\n📥 2GB media support enabled!` 
         });
         
         return true;
