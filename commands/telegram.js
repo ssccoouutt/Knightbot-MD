@@ -47,8 +47,8 @@ function clean_whatsapp_text(text, entities) {
             const end = start + entity.length;
             const content = text.substring(start, end);
             
-            // Exactly like your Python script's entity_types mapping
-            const entityTypes = {
+            // Map gramJS entity classNames to your Python entity types
+            const entityMap = {
                 'MessageEntityBold': ['*', '*'],
                 'MessageEntityItalic': ['_', '_'],
                 'MessageEntityStrike': ['~', '~'],
@@ -57,8 +57,8 @@ function clean_whatsapp_text(text, entities) {
             };
             
             const type = entity.className;
-            if (entityTypes[type]) {
-                const [prefix, suffix] = entityTypes[type];
+            if (entityMap[type]) {
+                const [prefix, suffix] = entityMap[type];
                 
                 // Process line by line like Python script
                 const lines = content.split('\n');
@@ -77,7 +77,7 @@ function clean_whatsapp_text(text, entities) {
             }
         }
     } else {
-        // Fallback regex processing like Python script
+        // Fallback regex - only if NO entities exist
         formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');  // bold
         formatted = formatted.replace(/__(.*?)__/g, '_$1_');      // italic
         formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');      // strikethrough
@@ -94,18 +94,9 @@ function clean_whatsapp_text(text, entities) {
 function getEntities(msg) {
     const entities = [];
     
-    // Telethon uses different property names
+    // In gramJS, entities are directly on the message
     if (msg.entities) {
         for (const e of msg.entities) {
-            entities.push({
-                className: e.className,
-                offset: e.offset,
-                length: e.length
-            });
-        }
-    }
-    if (msg.captionEntities) {
-        for (const e of msg.captionEntities) {
             entities.push({
                 className: e.className,
                 offset: e.offset,
@@ -164,12 +155,20 @@ async function startTelegramBot(sock, chatId) {
                 // Skip commands
                 if (msg.text && msg.text.startsWith('/')) return;
                 
+                // Get text and entities
+                const text = msg.text || msg.message || '';
                 const entities = getEntities(msg);
-                const caption = msg.text || '';
+                
+                // DEBUG: Log what we received
+                console.log(`📨 Raw: ${text}`);
+                if (entities.length > 0) {
+                    console.log(`📋 Entities: ${entities.map(e => e.className).join(', ')}`);
+                }
                 
                 // TEXT ONLY
-                if (msg.text && !msg.media) {
-                    const formatted = clean_whatsapp_text(msg.text, entities);
+                if (text && !msg.media) {
+                    const formatted = clean_whatsapp_text(text, entities);
+                    console.log(`✨ Formatted: ${formatted}`);
                     await sock.sendMessage(whatsappJid, { text: formatted });
                     return;
                 }
@@ -178,7 +177,7 @@ async function startTelegramBot(sock, chatId) {
                 const buffer = await downloadMedia(telegramClient, msg);
                 if (!buffer) return;
                 
-                const formattedCaption = clean_whatsapp_text(caption, entities);
+                const formattedCaption = clean_whatsapp_text(text, entities);
                 
                 if (msg.photo) {
                     await sock.sendMessage(whatsappJid, {
@@ -221,7 +220,7 @@ async function startTelegramBot(sock, chatId) {
                 }
                 
             } catch (err) {
-                // Silent
+                console.error('Error:', err.message);
             }
         }
         
@@ -235,6 +234,7 @@ async function startTelegramBot(sock, chatId) {
         return true;
         
     } catch (error) {
+        console.error('Start error:', error);
         await sock.sendMessage(chatId, { text: '❌ Failed' });
         return false;
     }
