@@ -21,6 +21,7 @@ const API_HASH = "064a66fe7097452e6ac8f4e8df28aa97";
 
 // HARDCODED VALUES
 const TELEGRAM_BOT_TOKEN = "8717510346:AAFi_8U7L0KCh13UzEu69EGc7j8qDteyu70";
+const BOT_ID = "8717510346"; // Bot's user ID
 const WHATSAPP_NUMBER = "923247220362";
 const WHATSAPP_GROUPS = [
     "120363140590753276@g.us",  // Original group
@@ -347,12 +348,24 @@ async function startTelegramBot(sock, chatId) {
         await new Promise(resolve => setTimeout(resolve, 2000));
         connectionReady = true;
         
-        // SIMPLIFIED: Just process every message that comes in
         async function messageHandler(event) {
             try {
                 const msg = event.message;
                 if (!msg) {
                     log('DEBUG', 'Empty message received');
+                    return;
+                }
+                
+                // Get sender info to check if it's the bot itself
+                let senderId = null;
+                if (msg.fromId) {
+                    if (msg.fromId.userId) senderId = msg.fromId.userId.toString();
+                    else if (msg.fromId.value) senderId = msg.fromId.value.toString();
+                }
+                
+                // CRITICAL: Skip messages from the bot itself to prevent loops
+                if (senderId === BOT_ID) {
+                    log('DEBUG', 'Skipping message from bot itself', { senderId });
                     return;
                 }
                 
@@ -362,8 +375,15 @@ async function startTelegramBot(sock, chatId) {
                     return;
                 }
                 
+                // Skip messages that look like our confirmation messages (to prevent loops)
+                if (msg.text && msg.text.includes('📨 *New Message*')) {
+                    log('DEBUG', 'Skipping confirmation message', { text: msg.text.substring(0, 50) });
+                    return;
+                }
+                
                 log('INFO', '📨 MESSAGE RECEIVED', {
                     messageId: msg.id.toString(),
+                    senderId: senderId,
                     hasText: !!msg.text,
                     hasMedia: !!msg.media
                 });
@@ -440,27 +460,27 @@ async function startTelegramBot(sock, chatId) {
                     }
                 }
                 
-                // Create preview
+                // Create preview - WITHOUT markdown to avoid parsing issues
                 const previewText = formattedText.length > 100 ? 
                     formattedText.substring(0, 100) + '...' : 
                     formattedText || '[No text]';
                 
                 const fileSizeInfo = messageData.type === 'media' ? 
-                    `\nSize: ${(messageData.size / 1024 / 1024).toFixed(2)}MB` : '';
+                    ` (${(messageData.size / 1024 / 1024).toFixed(2)}MB)` : '';
                 
+                // Simple plain text message without markdown to avoid parsing errors
                 const confirmationMessage = 
-                    `📨 *New Message*\n\n` +
+                    `📨 New Message\n\n` +
                     `Preview: ${previewText}${fileSizeInfo}\n\n` +
                     `Forward to?`;
                 
                 log('INFO', 'Sending confirmation', { chatId });
                 
-                // Send confirmation back to the same chat
+                // Send confirmation back to the same chat - WITHOUT parse_mode to avoid entity parsing errors
                 await telegramBot.telegram.sendMessage(
                     parseInt(chatId),
                     confirmationMessage,
                     {
-                        parse_mode: 'Markdown',
                         reply_markup: {
                             inline_keyboard: [
                                 [
