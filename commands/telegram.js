@@ -51,12 +51,25 @@ function saveConfig(config) {
 
 async function downloadMedia(client, message) {
     try {
+        // Skip if it's a webpage/media that doesn't have downloadable content
+        if (message.media?.className === 'MessageMediaWebPage') {
+            log('DEBUG', 'Skipping webpage media (no downloadable content)', { messageId: message.id });
+            return null;
+        }
+        
         const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
         await client.downloadMedia(message, { outputFile: tempFile });
         
-        // Check if file exists before reading
+        // Check if file exists and has content
         if (!fs.existsSync(tempFile)) {
             log('ERROR', 'Media file not created', { messageId: message.id });
+            return null;
+        }
+        
+        const stats = fs.statSync(tempFile);
+        if (stats.size === 0) {
+            log('ERROR', 'Media file is empty', { messageId: message.id });
+            fs.unlinkSync(tempFile);
             return null;
         }
         
@@ -66,7 +79,8 @@ async function downloadMedia(client, message) {
     } catch (error) {
         log('ERROR', 'Media download failed', { 
             messageId: message.id,
-            error: error.message 
+            error: error.message,
+            mediaType: message.media?.className
         });
         
         // Clean up temp file if it exists
@@ -86,13 +100,14 @@ async function downloadMedia(client, message) {
 function cleanWhitespace(text) {
     if (!text) return text;
     
-    // Don't trim the entire text - preserve leading/trailing whitespace
-    // Only collapse multiple spaces/tabs to single space (but preserve intentional spaces)
+    // Only collapse multiple spaces/tabs to single space
+    // But preserve intentional spaces and trailing/leading whitespace
     text = text.replace(/[ \t]{2,}/g, ' ');
     
     // Reduce multiple newlines to max 2
     text = text.replace(/\n{3,}/g, '\n\n');
     
+    // DO NOT trim - preserve leading/trailing whitespace
     return text;
 }
 
@@ -109,7 +124,7 @@ function wrapLines(content, prefix, suffix) {
             wrappedLines.push(prefix + line + suffix);
         } else {
             // Preserve empty lines
-            wrappedLines.push('');
+            wrappedLines.push(line); // Keep original empty line (may contain spaces)
         }
     }
     
@@ -132,7 +147,7 @@ function getEntityPriority(entityType) {
         case 'MessageEntityUrl':
             return 1;
         case 'MessageEntityBlockquote':
-            return 0;
+            return 0; // Lowest priority - just plain text
         default:
             return 0;
     }
@@ -250,6 +265,9 @@ function convertTelegramToWhatsApp(text, entities) {
         // Create a map to store formatted content at each position range
         const formattedMap = new Map();
         
+        // Track which positions have been processed to avoid duplicates
+        const processedRanges = new Set();
+        
         // First pass: apply all formatting to their respective ranges
         for (const entity of sortedEntities) {
             const start = entity.offset;
@@ -271,6 +289,12 @@ function convertTelegramToWhatsApp(text, entities) {
             }
             
             const rangeKey = `${start}_${end}`;
+            
+            // Skip if we've already processed this exact range
+            if (processedRanges.has(rangeKey)) {
+                continue;
+            }
+            
             const content = cleanText.substring(start, end);
             
             log('DEBUG', 'Processing entity for combination', {
@@ -345,6 +369,7 @@ function convertTelegramToWhatsApp(text, entities) {
             }
             
             formattedMap.set(rangeKey, formattedContent);
+            processedRanges.add(rangeKey);
         }
         
         // Second pass: build the final result in order
@@ -360,7 +385,7 @@ function convertTelegramToWhatsApp(text, entities) {
             .sort((a, b) => a.start - b.start);
         
         for (const range of sortedRanges) {
-            // Add text before this range
+            // Add text before this range (preserve original whitespace)
             if (range.start > lastIndex) {
                 result += cleanText.substring(lastIndex, range.start);
             }
@@ -375,7 +400,7 @@ function convertTelegramToWhatsApp(text, entities) {
             result += cleanText.substring(lastIndex);
         }
         
-        // Apply whitespace cleanup (but preserve trailing whitespace)
+        // Apply whitespace cleanup (preserve trailing/leading whitespace)
         const cleanedResult = cleanWhitespace(result);
         
         log('INFO', 'Final formatted text', {
@@ -397,7 +422,7 @@ function convertTelegramToWhatsApp(text, entities) {
     formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');        // Strikethrough
     formatted = formatted.replace(/`(.*?)`/g, '```$1```');      // Code
     
-    // Apply whitespace cleanup (preserve trailing)
+    // Apply whitespace cleanup (preserve trailing/leading)
     formatted = cleanWhitespace(formatted);
     
     log('INFO', 'Final formatted text (regex method)', {
@@ -499,6 +524,13 @@ async function startTelegramBot(sock, chatId) {
                 
                 if (!buffer || buffer.length === 0) {
                     log('ERROR', 'Failed to download media or empty buffer', { messageId: msg.id });
+                    // Still send text-only if media fails
+                    if (formattedText) {
+                        await sock.sendMessage(whatsappJid, { text: formattedText });
+                        log('INFO', 'Sent as text message instead (media failed)', { 
+                            textLength: formattedText.length 
+                        });
+                    }
                     return;
                 }
                 
