@@ -45,7 +45,7 @@ const helpCommand = require('./commands/help');
 const banCommand = require('./commands/ban');
 // Add with other imports
 const channelCommand = require('./commands/channel');
-const { telegramCommand, setTokenCommand, setWaCommand } = require('./commands/telegram');
+const { telegramCommand, setTokenCommand, setSessionCommand, setWaCommand } = require('./commands/telegram');
 const { promoteCommand } = require('./commands/promote');
 const { demoteCommand } = require('./commands/demote');
 const muteCommand = require('./commands/mute');
@@ -752,6 +752,11 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage.startsWith('.settoken'):
                 const token = rawText.slice(9).trim();
                 await setTokenCommand(sock, chatId, message, token);
+                commandExecuted = true;
+                break;
+            case userMessage.startsWith('.setsession'):
+                const sessionString = rawText.slice(11).trim();
+                await setSessionCommand(sock, chatId, message, sessionString);
                 commandExecuted = true;
                 break;
 
