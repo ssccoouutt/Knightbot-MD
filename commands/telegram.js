@@ -32,80 +32,57 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// ===== EXACT PATTERN FROM YOUR PYTHON SCRIPT =====
+// EXACT pattern from your Python script
 function clean_whatsapp_text(text, entities) {
     if (!text) return text;
     
-    let formatted = text;
-    
+    // If we have entities, build from scratch using plain text + entities
     if (entities && entities.length > 0) {
-        // Sort entities in reverse order
-        const sorted = [...entities].sort((a, b) => b.offset - a.offset);
+        // Start with the plain text (without any markdown)
+        let result = [];
+        let lastPos = 0;
+        
+        // Sort entities by offset
+        const sorted = [...entities].sort((a, b) => a.offset - b.offset);
         
         for (const entity of sorted) {
-            const start = entity.offset;
-            const end = start + entity.length;
-            const content = text.substring(start, end);
-            
-            // Map gramJS entity classNames to your Python entity types
-            const entityMap = {
-                'MessageEntityBold': ['*', '*'],
-                'MessageEntityItalic': ['_', '_'],
-                'MessageEntityStrike': ['~', '~'],
-                'MessageEntityCode': ['```', '```'],
-                'MessageEntityPre': ['```\n', '\n```']
-            };
-            
-            const type = entity.className;
-            if (entityMap[type]) {
-                const [prefix, suffix] = entityMap[type];
-                
-                // Process line by line like Python script
-                const lines = content.split('\n');
-                const wrappedLines = [];
-                
-                for (const line of lines) {
-                    if (line.trim()) {
-                        wrappedLines.push(`${prefix}${line.trim()}${suffix}`);
-                    } else {
-                        wrappedLines.push('');
-                    }
-                }
-                
-                const replacement = wrappedLines.join('\n');
-                formatted = formatted.substring(0, start) + replacement + formatted.substring(end);
+            // Add plain text before entity
+            if (entity.offset > lastPos) {
+                result.push(text.substring(lastPos, entity.offset));
             }
+            
+            const content = text.substring(entity.offset, entity.offset + entity.length);
+            
+            // Apply formatting based on entity type
+            if (entity.className === 'MessageEntityBold') {
+                result.push(`*${content}*`);
+            }
+            else if (entity.className === 'MessageEntityItalic') {
+                result.push(`_${content}_`);
+            }
+            else if (entity.className === 'MessageEntityStrike') {
+                result.push(`~${content}~`);
+            }
+            else if (entity.className === 'MessageEntityCode' || entity.className === 'MessageEntityPre') {
+                result.push(`\`\`\`${content}\`\`\``);
+            }
+            else {
+                result.push(content);
+            }
+            
+            lastPos = entity.offset + entity.length;
         }
-    } else {
-        // Fallback regex - only if NO entities exist
-        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');  // bold
-        formatted = formatted.replace(/__(.*?)__/g, '_$1_');      // italic
-        formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');      // strikethrough
-        formatted = formatted.replace(/`(.*?)`/g, '```$1```');    // code
+        
+        // Add remaining text
+        if (lastPos < text.length) {
+            result.push(text.substring(lastPos));
+        }
+        
+        return result.join('');
     }
     
-    // Clean whitespace exactly like Python script
-    formatted = formatted.replace(/[ \t]+/g, ' ');
-    formatted = formatted.replace(/\n{3,}/g, '\n\n');
-    
-    return formatted.trim();
-}
-
-function getEntities(msg) {
-    const entities = [];
-    
-    // In gramJS, entities are directly on the message
-    if (msg.entities) {
-        for (const e of msg.entities) {
-            entities.push({
-                className: e.className,
-                offset: e.offset,
-                length: e.length
-            });
-        }
-    }
-    
-    return entities;
+    // No entities - return plain text as is
+    return text;
 }
 
 async function downloadMedia(client, message) {
@@ -155,40 +132,38 @@ async function startTelegramBot(sock, chatId) {
                 // Skip commands
                 if (msg.text && msg.text.startsWith('/')) return;
                 
-                // Get text and entities
-                const text = msg.text || msg.message || '';
-                const entities = getEntities(msg);
+                const text = msg.text || '';
+                const entities = msg.entities || [];
                 
-                // DEBUG: Log what we received
+                // DEBUG
                 console.log(`📨 Raw: ${text}`);
                 if (entities.length > 0) {
                     console.log(`📋 Entities: ${entities.map(e => e.className).join(', ')}`);
                 }
                 
+                const formatted = clean_whatsapp_text(text, entities);
+                console.log(`✨ Formatted: ${formatted}`);
+                
                 // TEXT ONLY
                 if (text && !msg.media) {
-                    const formatted = clean_whatsapp_text(text, entities);
-                    console.log(`✨ Formatted: ${formatted}`);
                     await sock.sendMessage(whatsappJid, { text: formatted });
                     return;
                 }
                 
-                // MEDIA
+                // MEDIA handling...
                 const buffer = await downloadMedia(telegramClient, msg);
                 if (!buffer) return;
-                
-                const formattedCaption = clean_whatsapp_text(text, entities);
                 
                 if (msg.photo) {
                     await sock.sendMessage(whatsappJid, {
                         image: buffer,
-                        caption: formattedCaption
+                        caption: formatted
                     });
                 }
                 else if (msg.video) {
                     await sock.sendMessage(whatsappJid, {
                         video: buffer,
-                        caption: formattedCaption
+                        caption: formatted
                     });
                 }
                 else if (msg.document) {
@@ -198,13 +173,13 @@ async function startTelegramBot(sock, chatId) {
                     await sock.sendMessage(whatsappJid, {
                         document: buffer,
                         fileName: fileName,
-                        caption: formattedCaption
+                        caption: formatted
                     });
                 }
                 else if (msg.audio) {
                     await sock.sendMessage(whatsappJid, {
                         audio: buffer,
-                        caption: formattedCaption
+                        caption: formatted
                     });
                 }
                 else if (msg.voice) {
