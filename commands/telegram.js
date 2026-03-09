@@ -3,12 +3,14 @@ const { StringSession } = require('telegram/sessions');
 const { NewMessage } = require('telegram/events');
 const fs = require('fs');
 const path = require('path');
+const { Telegraf, Markup } = require('telegraf');
 
 const CONFIG_FILE = path.join(process.cwd(), 'data', 'telegram_bridge.json');
 const TEMP_DIR = path.join(process.cwd(), 'temp');
 let telegramClient = null;
 let isActive = false;
 let connectionReady = false;
+let telegramBot = null; // Telegraf bot instance for confirmations
 
 // Store pending messages for confirmation
 const pendingMessages = new Map();
@@ -18,7 +20,13 @@ if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 const API_ID = 32086282;
 const API_HASH = "064a66fe7097452e6ac8f4e8df28aa97";
 
+// Telegram Bot Configuration (from your Python script)
+const TELEGRAM_BOT_TOKEN = "7346090805:AAEoJYmSE1reQ1fvkfd7QiiAgTyvrrEpnXQ";
+
 // WhatsApp Configuration from Python script
+const WHATSAPP_API_TOKEN = "4za0bd37z4qck0zz";
+const WHATSAPP_INSTANCE_ID = "instance150332";
+const WHATSAPP_NUMBER = "923247220362";
 const WHATSAPP_GROUPS = [
     "120363140590753276@g.us",  // Original group
     "120363162260844407@g.us",
@@ -26,6 +34,7 @@ const WHATSAPP_GROUPS = [
     "120363023394033137@g.us",
     "120363161222427319@g.us"   // Fifth group
 ];
+const ULTRA_MSG_BASE_URL = `https://api.ultramsg.com/${WHATSAPP_INSTANCE_ID}`;
 
 // Logger function with timestamps
 function log(level, message, data = null) {
@@ -301,30 +310,17 @@ function convertTelegramToWhatsApp(text, entities) {
     return formatted;
 }
 
-async function sendToWhatsApp(sock, messageData, targetType) {
+async function sendToWhatsApp(messageData, targetType) {
     try {
-        const config = loadConfig();
-        if (!config.whatsappNumber) {
-            log('ERROR', 'WhatsApp number not configured');
-            return false;
-        }
-        
-        const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
-            config.whatsappNumber :
-            `${config.whatsappNumber}@s.whatsapp.net`;
-        
         let targets = [];
         
         // Determine targets based on user choice
         switch (targetType) {
             case 'own':
-                targets = [whatsappJid];
+                targets = [WHATSAPP_NUMBER];
                 break;
             case 'group':
-                // Add all WhatsApp groups from Python script
-                targets = WHATSAPP_GROUPS.map(group => 
-                    group.includes('@g.us') ? group : `${group}@g.us`
-                );
+                targets = WHATSAPP_GROUPS;
                 break;
             case 'cancel':
                 log('INFO', 'Message sending cancelled by user');
@@ -334,46 +330,56 @@ async function sendToWhatsApp(sock, messageData, targetType) {
                 return false;
         }
         
-        log('INFO', `Sending to ${targets.length} targets`, { targetType });
+        log('INFO', `Sending to ${targets.length} WhatsApp targets`, { targetType });
         
-        // Send to each target
+        // Send to each target using UltraMsg API
         for (const target of targets) {
             if (messageData.type === 'text') {
-                await sock.sendMessage(target, { text: messageData.content });
-                log('INFO', 'Text message sent to WhatsApp', { 
-                    target,
-                    textLength: messageData.content.length 
+                await fetch(`${ULTRA_MSG_BASE_URL}/messages/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        token: WHATSAPP_API_TOKEN,
+                        to: target,
+                        body: messageData.content
+                    })
                 });
+                log('INFO', 'Text message sent to WhatsApp', { target });
+                
             } else if (messageData.type === 'media') {
                 if (messageData.mediaType === 'photo') {
-                    await sock.sendMessage(target, {
-                        image: messageData.buffer,
-                        caption: messageData.caption
+                    await fetch(`${ULTRA_MSG_BASE_URL}/messages/image`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({
+                            token: WHATSAPP_API_TOKEN,
+                            to: target,
+                            image: messageData.fileUrl,
+                            caption: messageData.caption
+                        })
                     });
                 } else if (messageData.mediaType === 'video') {
-                    await sock.sendMessage(target, {
-                        video: messageData.buffer,
-                        caption: messageData.caption
+                    await fetch(`${ULTRA_MSG_BASE_URL}/messages/video`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({
+                            token: WHATSAPP_API_TOKEN,
+                            to: target,
+                            video: messageData.fileUrl,
+                            caption: messageData.caption
+                        })
                     });
                 } else if (messageData.mediaType === 'document') {
-                    await sock.sendMessage(target, {
-                        document: messageData.buffer,
-                        fileName: messageData.fileName,
-                        caption: messageData.caption
-                    });
-                } else if (messageData.mediaType === 'audio') {
-                    await sock.sendMessage(target, {
-                        audio: messageData.buffer,
-                        caption: messageData.caption
-                    });
-                } else if (messageData.mediaType === 'voice') {
-                    await sock.sendMessage(target, {
-                        audio: messageData.buffer,
-                        ptt: true
-                    });
-                } else if (messageData.mediaType === 'sticker') {
-                    await sock.sendMessage(target, {
-                        sticker: messageData.buffer
+                    await fetch(`${ULTRA_MSG_BASE_URL}/messages/document`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({
+                            token: WHATSAPP_API_TOKEN,
+                            to: target,
+                            document: messageData.fileUrl,
+                            filename: messageData.fileName,
+                            caption: messageData.caption
+                        })
                     });
                 }
                 log('INFO', `${messageData.mediaType} sent to WhatsApp`, { target });
@@ -387,34 +393,70 @@ async function sendToWhatsApp(sock, messageData, targetType) {
     }
 }
 
-async function handleConfirmation(sock, chatId, messageId, userChoice) {
-    const pendingKey = `${chatId}_${messageId}`;
-    const messageData = pendingMessages.get(pendingKey);
+// Initialize Telegram bot for confirmations
+function initTelegramBot() {
+    telegramBot = new Telegraf(TELEGRAM_BOT_TOKEN);
     
-    if (!messageData) {
-        log('ERROR', 'No pending message found', { chatId, messageId });
-        await sock.sendMessage(chatId, { text: '❌ This message has expired or already processed.' });
-        return;
-    }
+    // Handle callback queries from inline buttons
+    telegramBot.on('callback_query', async (ctx) => {
+        try {
+            const callbackData = ctx.callbackQuery.data;
+            const messageId = ctx.callbackQuery.message.message_id;
+            const chatId = ctx.callbackQuery.message.chat.id;
+            
+            // Parse callback data: confirm_messageId_target
+            const parts = callbackData.split('_');
+            if (parts.length !== 3 || parts[0] !== 'confirm') {
+                await ctx.answerCbQuery('Invalid option');
+                return;
+            }
+            
+            const originalMessageId = parts[1];
+            const target = parts[2];
+            const pendingKey = `${chatId}_${originalMessageId}`;
+            const messageData = pendingMessages.get(pendingKey);
+            
+            if (!messageData) {
+                await ctx.answerCbQuery('❌ This message has expired');
+                await ctx.editMessageText('❌ This message has expired or already processed.');
+                return;
+            }
+            
+            // Answer callback query immediately
+            await ctx.answerCbQuery('Processing...');
+            
+            // Remove from pending
+            pendingMessages.delete(pendingKey);
+            
+            // Handle cancel
+            if (target === 'cancel') {
+                await ctx.editMessageText('❌ Message forwarding cancelled.');
+                return;
+            }
+            
+            // Send to WhatsApp
+            const success = await sendToWhatsApp(messageData, target);
+            
+            if (success) {
+                const targetText = target === 'own' ? 'your own chat' : 'all groups';
+                await ctx.editMessageText(`✅ Message forwarded to WhatsApp (${targetText})`);
+            } else {
+                await ctx.editMessageText('❌ Failed to forward message to WhatsApp');
+            }
+            
+        } catch (error) {
+            log('ERROR', 'Callback query error', { error: error.message });
+        }
+    });
     
-    // Remove from pending
-    pendingMessages.delete(pendingKey);
+    // Handle /start command
+    telegramBot.command('start', (ctx) => {
+        ctx.reply('👋 Welcome! I forward messages from your other Telegram bot to WhatsApp with confirmation.');
+    });
     
-    // Handle cancel
-    if (userChoice === 'cancel') {
-        await sock.sendMessage(chatId, { text: '❌ Message sending cancelled.' });
-        return;
-    }
-    
-    // Send to WhatsApp
-    const success = await sendToWhatsApp(sock, messageData, userChoice);
-    
-    if (success) {
-        const targetText = userChoice === 'own' ? 'your own chat' : 'all groups';
-        await sock.sendMessage(chatId, { text: `✅ Message forwarded to WhatsApp (${targetText})` });
-    } else {
-        await sock.sendMessage(chatId, { text: '❌ Failed to forward message to WhatsApp' });
-    }
+    // Start the bot
+    telegramBot.launch();
+    log('INFO', 'Telegram confirmation bot started');
 }
 
 async function startTelegramBot(sock, chatId) {
@@ -442,6 +484,11 @@ async function startTelegramBot(sock, chatId) {
         
         await telegramClient.start({ botAuthToken: config.botToken });
         log('INFO', 'Telegram client connected successfully');
+        
+        // Initialize the confirmation bot if not already running
+        if (!telegramBot) {
+            initTelegramBot();
+        }
         
         // Wait a moment for connection to stabilize
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -497,7 +544,7 @@ async function startTelegramBot(sock, chatId) {
                     timestamp: Date.now()
                 };
                 
-                // If media, download it
+                // If media, get the file URL
                 if (msg.media) {
                     // For media messages, ensure connection is ready
                     if (!connectionReady) {
@@ -505,43 +552,52 @@ async function startTelegramBot(sock, chatId) {
                         await new Promise(resolve => setTimeout(resolve, 2000));
                     }
                     
-                    log('DEBUG', 'Downloading media for confirmation', { messageId: msg.id });
+                    log('DEBUG', 'Getting media info', { messageId: msg.id });
                     
-                    // Add small delay before downloading
+                    // Add small delay before processing
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     
-                    const buffer = await downloadMedia(telegramClient, msg);
+                    let fileUrl = '';
+                    let fileName = 'file';
                     
-                    if (!buffer || buffer.length === 0) {
-                        log('ERROR', 'Failed to download media', { messageId: msg.id });
-                        await sock.sendMessage(chatId, { 
-                            text: '❌ Failed to download media. Please try again.' 
-                        });
-                        return;
-                    }
-                    
-                    // Prepare media message data
-                    messageData = {
-                        type: 'media',
-                        mediaType: msg.photo ? 'photo' : 
-                                   msg.video ? 'video' :
-                                   msg.document ? 'document' :
-                                   msg.audio ? 'audio' :
-                                   msg.voice ? 'voice' :
-                                   msg.sticker ? 'sticker' : 'unknown',
-                        buffer: buffer,
-                        caption: formattedText,
-                        timestamp: Date.now()
-                    };
-                    
-                    if (msg.document) {
-                        messageData.fileName = msg.document.attributes
+                    if (msg.photo) {
+                        const photo = msg.photo;
+                        fileUrl = await telegramClient.getFile(photo);
+                        messageData = {
+                            type: 'media',
+                            mediaType: 'photo',
+                            fileUrl: fileUrl,
+                            caption: formattedText,
+                            timestamp: Date.now()
+                        };
+                    } else if (msg.video) {
+                        const video = msg.video;
+                        fileUrl = await telegramClient.getFile(video);
+                        messageData = {
+                            type: 'media',
+                            mediaType: 'video',
+                            fileUrl: fileUrl,
+                            caption: formattedText,
+                            timestamp: Date.now()
+                        };
+                    } else if (msg.document) {
+                        const document = msg.document;
+                        fileUrl = await telegramClient.getFile(document);
+                        fileName = document.attributes
                             .find(a => a.className === 'DocumentAttributeFilename')?.fileName || 'file';
+                        messageData = {
+                            type: 'media',
+                            mediaType: 'document',
+                            fileUrl: fileUrl,
+                            fileName: fileName,
+                            caption: formattedText,
+                            timestamp: Date.now()
+                        };
                     }
                 }
                 
-                // Store in pending messages
-                const pendingKey = `${chatId}_${msg.id}`;
+                // Store in pending messages with the original message ID
+                const pendingKey = `${msg.fromId.userId}_${msg.id}`;
                 pendingMessages.set(pendingKey, messageData);
                 
                 // Auto-cleanup old pending messages (older than 5 minutes)
@@ -552,22 +608,12 @@ async function startTelegramBot(sock, chatId) {
                     }
                 }
                 
-                // Create inline keyboard for confirmation
-                const keyboard = [
-                    [
-                        { text: '📱 Own Chat', callbackData: `confirm_${msg.id}_own` },
-                        { text: '👥 Groups', callbackData: `confirm_${msg.id}_group` }
-                    ],
-                    [
-                        { text: '❌ Cancel', callbackData: `confirm_${msg.id}_cancel` }
-                    ]
-                ];
-                
-                // Send confirmation message with preview
-                const previewText = formattedText.length > 100 ? 
-                    formattedText.substring(0, 100) + '...' : 
+                // Create preview text
+                const previewText = formattedText.length > 200 ? 
+                    formattedText.substring(0, 200) + '...' : 
                     formattedText;
                 
+                // Send confirmation to the Telegram confirmation bot
                 const confirmationMessage = 
                     `📨 *New message received*\n\n` +
                     `Preview:\n${previewText}\n\n` +
@@ -575,12 +621,28 @@ async function startTelegramBot(sock, chatId) {
                     `Length: ${formattedText.length} characters\n\n` +
                     `Where would you like to forward this to WhatsApp?`;
                 
-                await sock.sendMessage(chatId, {
-                    text: confirmationMessage,
-                    buttons: keyboard
-                });
+                // Send with inline keyboard
+                await telegramBot.telegram.sendMessage(
+                    msg.fromId.userId, // Send to the same user who sent the original message
+                    confirmationMessage,
+                    {
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            inline_keyboard: [
+                                [
+                                    { text: '📱 Own Chat', callback_data: `confirm_${msg.id}_own` },
+                                    { text: '👥 All Groups', callback_data: `confirm_${msg.id}_group` }
+                                ],
+                                [
+                                    { text: '❌ Cancel', callback_data: `confirm_${msg.id}_cancel` }
+                                ]
+                            ]
+                        }
+                    }
+                );
                 
-                log('INFO', 'Confirmation request sent to user', { 
+                log('INFO', 'Confirmation request sent to Telegram bot', { 
+                    userId: msg.fromId.userId,
                     messageId: msg.id,
                     hasMedia: !!msg.media 
                 });
@@ -600,7 +662,7 @@ async function startTelegramBot(sock, chatId) {
         config.active = true;
         saveConfig(config);
         
-        await sock.sendMessage(chatId, { text: '✅ Bridge active - You will be asked for confirmation before forwarding to WhatsApp' });
+        await sock.sendMessage(chatId, { text: '✅ Bridge active - Messages will be sent to Telegram bot for confirmation' });
         log('INFO', 'Bridge started successfully');
         return true;
         
@@ -611,26 +673,6 @@ async function startTelegramBot(sock, chatId) {
         });
         await sock.sendMessage(chatId, { text: '❌ Failed to start' });
         return false;
-    }
-}
-
-async function handleButtonClick(sock, buttonData, chatId) {
-    try {
-        // Button data format: confirm_messageId_target
-        const parts = buttonData.split('_');
-        if (parts.length !== 3 || parts[0] !== 'confirm') {
-            log('ERROR', 'Invalid button data', { buttonData });
-            return;
-        }
-        
-        const messageId = parts[1];
-        const target = parts[2];
-        
-        await handleConfirmation(sock, chatId, messageId, target);
-        
-    } catch (error) {
-        log('ERROR', 'Button handler error', { error: error.message });
-        await sock.sendMessage(chatId, { text: '❌ Failed to process your selection' });
     }
 }
 
@@ -653,6 +695,10 @@ async function telegramCommand(sock, chatId, message, args) {
             break;
         case 'off': case 'stop':
             if (telegramClient) await telegramClient.disconnect();
+            if (telegramBot) {
+                telegramBot.stop();
+                telegramBot = null;
+            }
             isActive = false;
             connectionReady = false;
             config.active = false;
@@ -686,6 +732,5 @@ async function setWaCommand(sock, chatId, message, number) {
 module.exports = {
     telegramCommand,
     setTokenCommand,
-    setWaCommand,
-    handleButtonClick
+    setWaCommand
 };
