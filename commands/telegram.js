@@ -32,26 +32,14 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// Download file using client (up to 2GB)
 async function downloadMedia(client, message) {
     try {
-        const tempFile = path.join(TEMP_DIR, `telegram_${Date.now()}_${message.id}`);
-        console.log(`📥 Downloading media...`);
-        
-        await client.downloadMedia(message, {
-            progressCallback: (downloaded, total) => {
-                const percent = Math.round((downloaded / total) * 100);
-                console.log(`Download: ${percent}%`);
-            },
-            outputFile: tempFile
-        });
-        
+        const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
+        await client.downloadMedia(message, { outputFile: tempFile });
         const buffer = fs.readFileSync(tempFile);
         fs.unlinkSync(tempFile);
-        console.log(`✅ Downloaded: ${(buffer.length/1024/1024).toFixed(2)}MB`);
         return buffer;
     } catch (error) {
-        console.error('Download error:', error);
         return null;
     }
 }
@@ -60,9 +48,7 @@ async function startTelegramBot(sock, chatId) {
     const config = loadConfig();
     
     if (!config.botToken) {
-        await sock.sendMessage(chatId, { 
-            text: '❌ Set bot token first: `.settoken YOUR_BOT_TOKEN`' 
-        });
+        await sock.sendMessage(chatId, { text: '❌ Set bot token first: `.settoken TOKEN`' });
         return false;
     }
     
@@ -78,77 +64,75 @@ async function startTelegramBot(sock, chatId) {
             config.whatsappNumber :
             `${config.whatsappNumber}@s.whatsapp.net`;
         
-        // Connect using BOT TOKEN with MTProto (like Telethon!)
-        console.log('🔄 Connecting to Telegram MTProto with bot token...');
         telegramClient = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
             connectionRetries: 5
         });
         
-        await telegramClient.start({
-            botAuthToken: config.botToken // This is the key!
-        });
+        await telegramClient.start({ botAuthToken: config.botToken });
+        console.log('✅ Telegram connected');
         
-        console.log('✅ Connected to Telegram MTProto (2GB limit)!');
-        
-        // Add message handler
         async function messageHandler(event) {
             try {
-                const message = event.message;
-                if (!message) return;
+                const msg = event.message;
+                if (!msg) return;
                 
-                console.log(`📨 Message received`);
+                // Skip commands
+                if (msg.text && msg.text.startsWith('/')) return;
                 
-                // Handle text
-                if (message.text) {
+                // TEXT ONLY - send as is
+                if (msg.text && !msg.media) {
+                    await sock.sendMessage(whatsappJid, { text: msg.text });
+                    return;
+                }
+                
+                // MEDIA WITH CAPTION
+                const caption = msg.text || '';
+                const buffer = await downloadMedia(telegramClient, msg);
+                
+                if (!buffer) return;
+                
+                if (msg.photo) {
                     await sock.sendMessage(whatsappJid, {
-                        text: `${message.text}`
+                        image: buffer,
+                        caption: caption
+                    });
+                }
+                else if (msg.video) {
+                    await sock.sendMessage(whatsappJid, {
+                        video: buffer,
+                        caption: caption
+                    });
+                }
+                else if (msg.document) {
+                    const fileName = msg.document.attributes
+                        .find(a => a.className === 'DocumentAttributeFilename')?.fileName || 'file';
+                    
+                    await sock.sendMessage(whatsappJid, {
+                        document: buffer,
+                        fileName: fileName,
+                        caption: caption
+                    });
+                }
+                else if (msg.audio) {
+                    await sock.sendMessage(whatsappJid, {
+                        audio: buffer,
+                        caption: caption
+                    });
+                }
+                else if (msg.voice) {
+                    await sock.sendMessage(whatsappJid, {
+                        audio: buffer,
+                        ptt: true
+                    });
+                }
+                else if (msg.sticker) {
+                    await sock.sendMessage(whatsappJid, {
+                        sticker: buffer
                     });
                 }
                 
-                // Handle media
-                if (message.media) {
-                    const buffer = await downloadMedia(telegramClient, message);
-                    
-                    if (buffer) {
-                        if (message.photo) {
-                            await sock.sendMessage(whatsappJid, {
-                                image: buffer,
-                                caption: message.text || ''
-                            });
-                        } else if (message.video) {
-                            await sock.sendMessage(whatsappJid, {
-                                video: buffer,
-                                caption: message.text || ''
-                            });
-                        } else if (message.document) {
-                            const fileName = message.document.attributes
-                                .find(a => a.className === 'DocumentAttributeFilename')?.fileName || 'file';
-                            
-                            await sock.sendMessage(whatsappJid, {
-                                document: buffer,
-                                fileName: fileName,
-                                caption: message.text || ''
-                            });
-                        } else if (message.audio) {
-                            await sock.sendMessage(whatsappJid, {
-                                audio: buffer,
-                                caption: message.text || ''
-                            });
-                        } else if (message.voice) {
-                            await sock.sendMessage(whatsappJid, {
-                                audio: buffer,
-                                ptt: true
-                            });
-                        } else if (message.sticker) {
-                            await sock.sendMessage(whatsappJid, {
-                                sticker: buffer
-                            });
-                        }
-                        console.log(`✅ Media forwarded`);
-                    }
-                }
             } catch (err) {
-                console.error('Message handler error:', err);
+                // Silent fail
             }
         }
         
@@ -158,71 +142,50 @@ async function startTelegramBot(sock, chatId) {
         config.active = true;
         saveConfig(config);
         
-        await sock.sendMessage(chatId, { 
-            text: `✅ *MTProto Bridge Active*\n📱 To: ${config.whatsappNumber}\n📥 2GB file support enabled!` 
-        });
-        
+        await sock.sendMessage(chatId, { text: '✅ Bridge active' });
         return true;
         
     } catch (error) {
-        console.error('Start error:', error);
-        await sock.sendMessage(chatId, { text: `❌ Failed: ${error.message}` });
+        await sock.sendMessage(chatId, { text: '❌ Failed to start' });
         return false;
     }
 }
 
 async function telegramCommand(sock, chatId, message, args) {
-    const subCommand = args[0]?.toLowerCase();
+    const sub = args[0]?.toLowerCase();
+    const config = loadConfig();
     
-    if (!subCommand) {
-        const config = loadConfig();
-        let status = `📊 *Telegram Bridge*\n\n`;
-        status += `Active: ${isActive ? '✅' : '❌'}\n`;
-        status += `Bot Token: ${config.botToken ? '✅' : '❌'}\n`;
-        status += `WhatsApp: ${config.whatsappNumber || 'Not set'}\n\n`;
-        status += `Commands:\n`;
-        status += `• .telegram on - Start\n`;
-        status += `• .telegram off - Stop\n`;
-        status += `• .settoken TOKEN\n`;
-        status += `• .setwa NUMBER`;
-        
-        await sock.sendMessage(chatId, { text: status });
+    if (!sub) {
+        await sock.sendMessage(chatId, { 
+            text: `📊 Status\nActive: ${isActive ? '✅' : '❌'}\nToken: ${config.botToken ? '✅' : '❌'}\nWhatsApp: ${config.whatsappNumber || 'Not set'}\n\nCommands:\n.on - Start\n.off - Stop\n.settoken TOKEN\n.setwa NUMBER`
+        });
         return;
     }
     
-    switch (subCommand) {
-        case 'on':
-        case 'start':
+    switch (sub) {
+        case 'on': case 'start':
             await startTelegramBot(sock, chatId);
             break;
-            
-        case 'off':
-        case 'stop':
+        case 'off': case 'stop':
             if (telegramClient) await telegramClient.disconnect();
             isActive = false;
-            const config = loadConfig();
             config.active = false;
             saveConfig(config);
-            await sock.sendMessage(chatId, { text: '🔴 *Bridge Stopped*' });
+            await sock.sendMessage(chatId, { text: '🔴 Stopped' });
             break;
-            
-        default:
-            await sock.sendMessage(chatId, { text: 'Use: .telegram on / off' });
     }
 }
 
 async function setTokenCommand(sock, chatId, message, token) {
     if (!token) return await sock.sendMessage(chatId, { text: '❌ Provide token' });
-    
     const config = loadConfig();
     config.botToken = token;
     saveConfig(config);
-    await sock.sendMessage(chatId, { text: '✅ Bot token saved! (2GB support)' });
+    await sock.sendMessage(chatId, { text: '✅ Token saved' });
 }
 
 async function setWaCommand(sock, chatId, message, number) {
     if (!number) return await sock.sendMessage(chatId, { text: '❌ Provide number' });
-    
     const cleanNumber = number.replace(/[^0-9]/g, '');
     const config = loadConfig();
     config.whatsappNumber = cleanNumber;
