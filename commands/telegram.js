@@ -71,15 +71,30 @@ function convertTelegramToWhatsApp(text, entities) {
         entityCount: entities?.length || 0
     });
     
+    // First, remove all markdown symbols from the text
+    // We'll rely on entities to tell us what should be formatted
+    let cleanText = text;
+    
+    // Remove bold markers
+    cleanText = cleanText.replace(/\*\*/g, '');
+    // Remove italic markers  
+    cleanText = cleanText.replace(/__/g, '');
+    // Remove strikethrough markers
+    cleanText = cleanText.replace(/~~/g, '');
+    // Remove code markers
+    cleanText = cleanText.replace(/`/g, '');
+    
+    log('DEBUG', 'Removed markdown symbols', {
+        original: text,
+        cleaned: cleanText
+    });
+    
     // If we have entities, use them for accurate formatting
     if (entities && entities.length > 0) {
-        // Create a map of positions that are already formatted to avoid double-processing
-        const processedPositions = new Set();
-        
         // Sort entities by offset (ascending) to process from start to end
         const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
         
-        // Build the result piece by piece
+        // Build the result piece by piece using the clean text
         let result = '';
         let lastIndex = 0;
         
@@ -87,13 +102,13 @@ function convertTelegramToWhatsApp(text, entities) {
             const start = entity.offset;
             const end = start + entity.length;
             
-            // Add any text before this entity
+            // Add any text before this entity (from clean text)
             if (start > lastIndex) {
-                result += text.substring(lastIndex, start);
+                result += cleanText.substring(lastIndex, start);
             }
             
-            // Get the content for this entity
-            const content = text.substring(start, end);
+            // Get the content for this entity from clean text
+            const content = cleanText.substring(start, end);
             
             log('DEBUG', 'Processing entity', {
                 type: entity.className,
@@ -102,86 +117,78 @@ function convertTelegramToWhatsApp(text, entities) {
                 content
             });
             
-            // Process the entity content
-            let processedContent = content;
+            // Apply WhatsApp formatting based on entity type
+            let formattedContent = content;
             
             switch (entity.className) {
                 case 'MessageEntityBold':
-                    // Remove any existing ** or * markers
-                    processedContent = processedContent.replace(/^\*+|\*+$/g, '');
-                    processedContent = `*${processedContent}*`;
-                    log('INFO', 'Applied BOLD formatting', { original: content, formatted: processedContent });
+                    formattedContent = `*${content}*`;
+                    log('INFO', 'Applied BOLD formatting', { 
+                        original: content, 
+                        formatted: formattedContent 
+                    });
                     break;
                     
                 case 'MessageEntityItalic':
-                    // Remove any existing _ markers
-                    processedContent = processedContent.replace(/^_+|_+$/g, '');
-                    processedContent = `_${processedContent}_`;
-                    log('INFO', 'Applied ITALIC formatting', { original: content, formatted: processedContent });
+                    formattedContent = `_${content}_`;
+                    log('INFO', 'Applied ITALIC formatting', { 
+                        original: content, 
+                        formatted: formattedContent 
+                    });
                     break;
                     
                 case 'MessageEntityStrike':
-                    // Remove any existing ~ markers
-                    processedContent = processedContent.replace(/^~+|~+$/g, '');
-                    processedContent = `~${processedContent}~`;
-                    log('INFO', 'Applied STRIKETHROUGH formatting', { original: content, formatted: processedContent });
+                    formattedContent = `~${content}~`;
+                    log('INFO', 'Applied STRIKETHROUGH formatting', { 
+                        original: content, 
+                        formatted: formattedContent 
+                    });
                     break;
                     
                 case 'MessageEntityCode':
                 case 'MessageEntityPre':
-                    // Remove any existing ` markers
-                    processedContent = processedContent.replace(/^`+|`+$/g, '');
-                    processedContent = '```' + processedContent + '```';
-                    log('INFO', 'Applied CODE formatting', { original: content, formatted: processedContent });
+                    formattedContent = '```' + content + '```';
+                    log('INFO', 'Applied CODE formatting', { 
+                        original: content, 
+                        formatted: formattedContent 
+                    });
                     break;
                     
                 case 'MessageEntityBlockquote':
-                    // Remove blockquote markers
-                    processedContent = processedContent.replace(/^>+\s?/gm, '');
-                    log('INFO', 'Removed BLOCKQUOTE formatting', { original: content, formatted: processedContent });
+                    // WhatsApp doesn't support blockquotes, so just use the content
+                    formattedContent = content;
+                    log('INFO', 'Removed BLOCKQUOTE formatting', { 
+                        original: content, 
+                        formatted: formattedContent 
+                    });
                     break;
                     
                 case 'MessageEntityTextUrl':
                 case 'MessageEntityUrl':
                     // URLs: keep as plain text
+                    formattedContent = content;
                     log('INFO', 'Keeping URL as plain text', { content });
                     break;
                     
                 default:
                     log('WARN', 'Unknown entity type', { type: entity.className });
+                    formattedContent = content;
                     break;
             }
             
-            // Add the processed content
-            result += processedContent;
+            // Add the formatted content
+            result += formattedContent;
             lastIndex = end;
         }
         
         // Add any remaining text after the last entity
-        if (lastIndex < text.length) {
-            result += text.substring(lastIndex);
+        if (lastIndex < cleanText.length) {
+            result += cleanText.substring(lastIndex);
         }
-        
-        log('DEBUG', 'Intermediate result after entity processing', {
-            resultLength: result.length,
-            resultPreview: result.substring(0, 200) + '...'
-        });
-        
-        // Final cleanup: handle any remaining markdown patterns
-        // But be careful not to break WhatsApp formatting
-        result = result.replace(/\*\*(.*?)\*\*/g, '*$1*');  // Replace ** with *
-        result = result.replace(/__(.*?)__/g, '_$1_');     // Replace __ with _
-        result = result.replace(/~~(.*?)~~/g, '~$1~');     // Replace ~~ with ~
-        
-        // Ensure we don't have triple asterisks or other anomalies
-        result = result.replace(/\*{3,}/g, '**');  // Replace *** with **
-        result = result.replace(/_{3,}/g, '__');   // Replace ___ with __
-        result = result.replace(/~{3,}/g, '~~');   // Replace ~~~ with ~~
         
         log('INFO', 'Final formatted text', {
             originalLength: text.length,
             finalLength: result.length,
-            original: text,
             formatted: result
         });
         
@@ -190,21 +197,7 @@ function convertTelegramToWhatsApp(text, entities) {
     
     // Fallback to regex if no entities available
     log('DEBUG', 'No entities found, using regex fallback');
-    
-    let formatted = text;
-    
-    // Convert Telegram markdown to WhatsApp format
-    formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');     // Bold
-    formatted = formatted.replace(/__(.*?)__/g, '_$1_');        // Italic
-    formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');        // Strikethrough
-    formatted = formatted.replace(/`(.*?)`/g, '```$1```');      // Code
-    
-    log('INFO', 'Final formatted text (regex method)', {
-        original: text,
-        formatted: formatted
-    });
-    
-    return formatted;
+    return cleanText;
 }
 
 async function startTelegramBot(sock, chatId) {
