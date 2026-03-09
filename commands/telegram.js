@@ -32,42 +32,43 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// EXACT pattern from your Python script
 function clean_whatsapp_text(text, entities) {
     if (!text) return text;
     
-    // If we have entities, build from scratch using plain text + entities
+    // Get the plain text by removing markdown
+    let plainText = text;
     if (entities && entities.length > 0) {
-        // Start with the plain text (without any markdown)
+        // Build plain text by extracting content without markdown
         let result = [];
         let lastPos = 0;
         
-        // Sort entities by offset
         const sorted = [...entities].sort((a, b) => a.offset - b.offset);
         
         for (const entity of sorted) {
-            // Add plain text before entity
+            // Add text before entity
             if (entity.offset > lastPos) {
                 result.push(text.substring(lastPos, entity.offset));
             }
             
+            // Get the content WITHOUT the markdown (just the inner text)
             const content = text.substring(entity.offset, entity.offset + entity.length);
+            const plainContent = content.replace(/[*_~`]/g, ''); // Remove markdown chars
             
-            // Apply formatting based on entity type
+            // Apply WhatsApp formatting
             if (entity.className === 'MessageEntityBold') {
-                result.push(`*${content}*`);
+                result.push(`*${plainContent}*`);
             }
             else if (entity.className === 'MessageEntityItalic') {
-                result.push(`_${content}_`);
+                result.push(`_${plainContent}_`);
             }
             else if (entity.className === 'MessageEntityStrike') {
-                result.push(`~${content}~`);
+                result.push(`~${plainContent}~`);
             }
             else if (entity.className === 'MessageEntityCode' || entity.className === 'MessageEntityPre') {
-                result.push(`\`\`\`${content}\`\`\``);
+                result.push(`\`\`\`${plainContent}\`\`\``);
             }
             else {
-                result.push(content);
+                result.push(plainContent);
             }
             
             lastPos = entity.offset + entity.length;
@@ -81,7 +82,6 @@ function clean_whatsapp_text(text, entities) {
         return result.join('');
     }
     
-    // No entities - return plain text as is
     return text;
 }
 
@@ -150,7 +150,7 @@ async function startTelegramBot(sock, chatId) {
                     return;
                 }
                 
-                // MEDIA handling...
+                // MEDIA handling
                 const buffer = await downloadMedia(telegramClient, msg);
                 if (!buffer) return;
                 
