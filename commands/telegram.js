@@ -32,6 +32,74 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
+// Convert Telegram formatting to WhatsApp style
+function formatForWhatsApp(text, entities) {
+    if (!text) return text;
+    
+    let formatted = text;
+    const adjustments = [];
+    
+    // Sort entities in reverse order to avoid offset issues
+    const sorted = [...(entities || [])].sort((a, b) => b.offset - a.offset);
+    
+    for (const entity of sorted) {
+        const start = entity.offset;
+        const end = start + entity.length;
+        const content = text.substring(start, end);
+        
+        switch (entity.className) {
+            case 'MessageEntityBold':
+                adjustments.push({ start, end, replacement: `*${content}*` });
+                break;
+            case 'MessageEntityItalic':
+                adjustments.push({ start, end, replacement: `_${content}_` });
+                break;
+            case 'MessageEntityStrike':
+                adjustments.push({ start, end, replacement: `~${content}~` });
+                break;
+            case 'MessageEntityCode':
+            case 'MessageEntityPre':
+                adjustments.push({ start, end, replacement: `\`\`\`${content}\`\`\`` });
+                break;
+            case 'MessageEntityUnderline':
+                // WhatsApp doesn't have underline, use bold as fallback
+                adjustments.push({ start, end, replacement: `*${content}*` });
+                break;
+            case 'MessageEntitySpoiler':
+                // No spoiler in WhatsApp, send as is
+                break;
+        }
+    }
+    
+    // Apply adjustments from end to start
+    for (const adj of adjustments.sort((a, b) => b.start - a.start)) {
+        formatted = formatted.substring(0, adj.start) + 
+                   adj.replacement + 
+                   formatted.substring(adj.end);
+    }
+    
+    // Clean up any double formatting
+    formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*'); // bold
+    formatted = formatted.replace(/__(.*?)__/g, '_$1_');     // italic
+    formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');     // strikethrough
+    
+    return formatted;
+}
+
+// Extract entities from message
+function getEntities(msg) {
+    const entities = [];
+    
+    if (msg.entities) {
+        entities.push(...msg.entities);
+    }
+    if (msg.captionEntities) {
+        entities.push(...msg.captionEntities);
+    }
+    
+    return entities;
+}
+
 async function downloadMedia(client, message) {
     try {
         const tempFile = path.join(TEMP_DIR, `tg_${message.id}`);
@@ -69,7 +137,7 @@ async function startTelegramBot(sock, chatId) {
         });
         
         await telegramClient.start({ botAuthToken: config.botToken });
-        console.log('✅ Telegram connected');
+        console.log('✅ Connected');
         
         async function messageHandler(event) {
             try {
@@ -79,28 +147,32 @@ async function startTelegramBot(sock, chatId) {
                 // Skip commands
                 if (msg.text && msg.text.startsWith('/')) return;
                 
-                // TEXT ONLY - send as is
+                const entities = getEntities(msg);
+                const caption = msg.text || '';
+                
+                // TEXT ONLY
                 if (msg.text && !msg.media) {
-                    await sock.sendMessage(whatsappJid, { text: msg.text });
+                    const formatted = formatForWhatsApp(msg.text, entities);
+                    await sock.sendMessage(whatsappJid, { text: formatted });
                     return;
                 }
                 
-                // MEDIA WITH CAPTION
-                const caption = msg.text || '';
+                // MEDIA
                 const buffer = await downloadMedia(telegramClient, msg);
-                
                 if (!buffer) return;
+                
+                const formattedCaption = formatForWhatsApp(caption, entities);
                 
                 if (msg.photo) {
                     await sock.sendMessage(whatsappJid, {
                         image: buffer,
-                        caption: caption
+                        caption: formattedCaption
                     });
                 }
                 else if (msg.video) {
                     await sock.sendMessage(whatsappJid, {
                         video: buffer,
-                        caption: caption
+                        caption: formattedCaption
                     });
                 }
                 else if (msg.document) {
@@ -110,13 +182,13 @@ async function startTelegramBot(sock, chatId) {
                     await sock.sendMessage(whatsappJid, {
                         document: buffer,
                         fileName: fileName,
-                        caption: caption
+                        caption: formattedCaption
                     });
                 }
                 else if (msg.audio) {
                     await sock.sendMessage(whatsappJid, {
                         audio: buffer,
-                        caption: caption
+                        caption: formattedCaption
                     });
                 }
                 else if (msg.voice) {
@@ -132,7 +204,7 @@ async function startTelegramBot(sock, chatId) {
                 }
                 
             } catch (err) {
-                // Silent fail
+                // Silent
             }
         }
         
@@ -146,7 +218,7 @@ async function startTelegramBot(sock, chatId) {
         return true;
         
     } catch (error) {
-        await sock.sendMessage(chatId, { text: '❌ Failed to start' });
+        await sock.sendMessage(chatId, { text: '❌ Failed' });
         return false;
     }
 }
@@ -157,16 +229,16 @@ async function telegramCommand(sock, chatId, message, args) {
     
     if (!sub) {
         await sock.sendMessage(chatId, { 
-            text: `📊 Status\nActive: ${isActive ? '✅' : '❌'}\nToken: ${config.botToken ? '✅' : '❌'}\nWhatsApp: ${config.whatsappNumber || 'Not set'}\n\nCommands:\n.on - Start\n.off - Stop\n.settoken TOKEN\n.setwa NUMBER`
+            text: `📊 Status\nActive: ${isActive ? '✅' : '❌'}\nToken: ${config.botToken ? '✅' : '❌'}\nWhatsApp: ${config.whatsappNumber || 'Not set'}\n\nCommands:\n.on\n.off\n.settoken\n.setwa`
         });
         return;
     }
     
     switch (sub) {
-        case 'on': case 'start':
+        case 'on':
             await startTelegramBot(sock, chatId);
             break;
-        case 'off': case 'stop':
+        case 'off':
             if (telegramClient) await telegramClient.disconnect();
             isActive = false;
             config.active = false;
