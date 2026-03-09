@@ -343,7 +343,7 @@ async function startTelegramBot(sock, chatId) {
         await new Promise(resolve => setTimeout(resolve, 2000));
         connectionReady = true;
         
-        // FIX: Add event handler for all messages
+        // SIMPLIFIED: Just process every message that comes in
         async function messageHandler(event) {
             try {
                 const msg = event.message;
@@ -352,43 +352,22 @@ async function startTelegramBot(sock, chatId) {
                     return;
                 }
                 
-                // Get sender ID properly
-                let senderId = null;
-                if (msg.fromId) {
-                    if (msg.fromId.userId) {
-                        senderId = msg.fromId.userId;
-                    } else if (msg.fromId.value) {
-                        senderId = msg.fromId.value;
-                    } else if (msg.fromId.className === 'PeerUser') {
-                        senderId = msg.fromId.userId;
-                    } else {
-                        senderId = msg.fromId.toString();
-                    }
-                }
-                
-                if (!senderId) {
-                    log('DEBUG', 'Could not determine sender', { messageId: msg.id });
+                // Skip if it's a command
+                if (msg.text && msg.text.startsWith('/')) {
+                    log('DEBUG', 'Skipping command', { text: msg.text });
                     return;
                 }
                 
-                // Skip messages from bot itself
-                if (senderId.toString() === '8717510346') {
-                    log('DEBUG', 'Skipping bot message');
-                    return;
-                }
-                
-                log('INFO', '📨 NEW MESSAGE RECEIVED', {
+                log('INFO', '📨 MESSAGE RECEIVED', {
                     messageId: msg.id,
-                    senderId,
                     hasText: !!msg.text,
-                    text: msg.text ? msg.text.substring(0, 50) : 'none',
-                    hasMedia: !!msg.media,
-                    mediaType: msg.media?.className
+                    hasMedia: !!msg.media
                 });
                 
-                // Skip commands
-                if (msg.text && msg.text.startsWith('/')) {
-                    log('DEBUG', 'Skipping command');
+                // Get the chat ID to send confirmation back
+                const chatId = msg.chatId?.value || msg.peerId?.userId;
+                if (!chatId) {
+                    log('ERROR', 'Cannot determine chat ID');
                     return;
                 }
                 
@@ -444,8 +423,8 @@ async function startTelegramBot(sock, chatId) {
                     }
                 }
                 
-                // Store in pending messages
-                const pendingKey = `${senderId}_${msg.id}`;
+                // Store in pending messages using chatId
+                const pendingKey = `${chatId}_${msg.id}`;
                 pendingMessages.set(pendingKey, messageData);
                 log('INFO', 'Message stored in pending', { pendingKey });
                 
@@ -454,7 +433,6 @@ async function startTelegramBot(sock, chatId) {
                 for (const [key, data] of pendingMessages.entries()) {
                     if (now - data.timestamp > 300000) {
                         pendingMessages.delete(key);
-                        log('DEBUG', 'Cleaned up expired message', { key });
                     }
                 }
                 
@@ -471,11 +449,11 @@ async function startTelegramBot(sock, chatId) {
                     `Preview: ${previewText}${fileSizeInfo}\n\n` +
                     `Forward to?`;
                 
-                log('INFO', 'Sending confirmation', { senderId });
+                log('INFO', 'Sending confirmation', { chatId });
                 
-                // Send confirmation
+                // Send confirmation back to the same chat
                 await telegramBot.telegram.sendMessage(
-                    senderId,
+                    chatId,
                     confirmationMessage,
                     {
                         parse_mode: 'Markdown',
@@ -494,9 +472,8 @@ async function startTelegramBot(sock, chatId) {
                 );
                 
                 log('INFO', '✅ Confirmation sent', { 
-                    senderId, 
-                    messageId: msg.id,
-                    hasMedia: !!msg.media 
+                    chatId, 
+                    messageId: msg.id 
                 });
                 
             } catch (err) {
@@ -507,7 +484,7 @@ async function startTelegramBot(sock, chatId) {
             }
         }
         
-        // Add event handler
+        // Add event handler for all messages
         telegramClient.addEventHandler(messageHandler, new NewMessage({}));
         log('INFO', '✅ Message handler registered - ready to receive messages');
         
