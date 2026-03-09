@@ -176,7 +176,7 @@ function getEntityPriority(entityType) {
         case 'MessageEntityUrl':
             return 1;
         case 'MessageEntityBlockquote':
-            return 0; // Lowest priority - just plain text
+            return 0; // Lowest priority - just marks range, doesn't add formatting
         default:
             return 0;
     }
@@ -270,164 +270,123 @@ function convertTelegramToWhatsApp(text, entities) {
     
     // If we have entities, use them for accurate formatting
     if (entities && entities.length > 0) {
-        // First, identify blockquote ranges to skip formatting inside them
-        const blockquoteRanges = [];
-        for (const entity of entities) {
-            if (entity.className === 'MessageEntityBlockquote') {
-                blockquoteRanges.push({
-                    start: entity.offset,
-                    end: entity.offset + entity.length
-                });
-            }
-        }
+        // Sort entities by offset (ascending)
+        const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
         
-        // Sort entities by priority (higher priority last) and then by offset
-        const sortedEntities = [...entities].sort((a, b) => {
-            const priorityA = getEntityPriority(a.className);
-            const priorityB = getEntityPriority(b.className);
-            if (priorityA !== priorityB) {
-                return priorityA - priorityB;
-            }
-            return a.offset - b.offset;
-        });
+        // Process entities in reverse order to avoid position shifting (like Python script)
+        // But we'll use a different approach: build an array of segments
         
-        // Create a map to store formatted content at each position range
-        const formattedMap = new Map();
+        // First, create an array of text segments with their formatting
+        let segments = [];
+        let lastIndex = 0;
         
-        // Track which positions have been processed to avoid duplicates
-        const processedRanges = new Set();
+        // Create a map of entity types per position
+        const entityMap = new Map();
         
-        // First pass: apply all formatting to their respective ranges
+        // First pass: collect all formatting for each position
         for (const entity of sortedEntities) {
             const start = entity.offset;
             const end = start + entity.length;
+            const type = entity.className;
             
-            // Check if this entity is inside a blockquote
-            const isInBlockquote = blockquoteRanges.some(range => 
-                start >= range.start && end <= range.end
-            );
+            // For blockquote, we don't add formatting, just mark the range
+            if (type === 'MessageEntityBlockquote') {
+                continue; // Skip blockquote for now, handle separately
+            }
             
-            // Skip formatting entities that are inside blockquotes
-            if (isInBlockquote && entity.className !== 'MessageEntityBlockquote') {
-                log('DEBUG', 'Skipping entity inside blockquote', {
-                    type: entity.className,
-                    start,
-                    end
-                });
+            // Store formatting info for this range
+            if (!entityMap.has(start)) {
+                entityMap.set(start, []);
+            }
+            if (!entityMap.has(end)) {
+                entityMap.set(end, []);
+            }
+            
+            // We'll process formatting in reverse order later like Python script
+        }
+        
+        // Python-style: Sort entities by offset in reverse order
+        const reversedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+        
+        // Convert text to array for manipulation (like Python's text_list)
+        let textArray = cleanText.split('');
+        
+        // Process each entity type with line-by-line wrapping (like Python)
+        for (const entity of reversedEntities) {
+            const start = entity.offset;
+            const end = start + entity.length;
+            const type = entity.className;
+            
+            // Skip blockquote - we handle it separately (just remove the markers)
+            if (type === 'MessageEntityBlockquote') {
                 continue;
             }
             
-            const rangeKey = `${start}_${end}`;
-            
-            // Skip if we've already processed this exact range
-            if (processedRanges.has(rangeKey)) {
-                continue;
-            }
-            
+            // Get the content for this entity
             const content = cleanText.substring(start, end);
             
-            log('DEBUG', 'Processing entity for combination', {
-                type: entity.className,
-                start,
-                end,
-                content
-            });
-            
-            let formattedContent = content;
-            
-            // Get existing formatting for this range if any
-            if (formattedMap.has(rangeKey)) {
-                formattedContent = formattedMap.get(rangeKey);
-            }
-            
-            // Apply new formatting based on entity type
-            switch (entity.className) {
+            // Determine prefix and suffix based on entity type
+            let prefix = '', suffix = '';
+            switch (type) {
                 case 'MessageEntityBold':
-                    formattedContent = combineFormatting(formattedContent, '*', '*');
-                    log('INFO', 'Applied/Combined BOLD formatting', { 
-                        content,
-                        result: formattedContent
-                    });
+                    prefix = '*'; suffix = '*';
                     break;
-                    
                 case 'MessageEntityItalic':
-                    formattedContent = combineFormatting(formattedContent, '_', '_');
-                    log('INFO', 'Applied/Combined ITALIC formatting', { 
-                        content,
-                        result: formattedContent
-                    });
+                    prefix = '_'; suffix = '_';
                     break;
-                    
                 case 'MessageEntityStrike':
-                    formattedContent = combineFormatting(formattedContent, '~', '~');
-                    log('INFO', 'Applied/Combined STRIKETHROUGH formatting', { 
-                        content,
-                        result: formattedContent
-                    });
+                    prefix = '~'; suffix = '~';
                     break;
-                    
                 case 'MessageEntityCode':
                 case 'MessageEntityPre':
-                    // Code blocks override other formatting
-                    formattedContent = '```' + content + '```';
-                    log('INFO', 'Applied CODE formatting (overrides others)', { 
-                        content,
-                        result: formattedContent
-                    });
+                    prefix = '```'; suffix = '```';
                     break;
-                    
-                case 'MessageEntityBlockquote':
-                    // Blockquote - just use plain text (no formatting)
-                    formattedContent = content;
-                    log('INFO', 'Keeping BLOCKQUOTE as plain text', { 
-                        content
-                    });
-                    break;
-                    
-                case 'MessageEntityTextUrl':
-                case 'MessageEntityUrl':
-                    // URLs: keep as plain text
-                    formattedContent = content;
-                    log('INFO', 'Keeping URL as plain text', { content });
-                    break;
-                    
                 default:
-                    log('WARN', 'Unknown entity type', { type: entity.className });
-                    formattedContent = content;
-                    break;
+                    continue; // Skip other types
             }
             
-            formattedMap.set(rangeKey, formattedContent);
-            processedRanges.add(rangeKey);
-        }
-        
-        // Second pass: build the final result in order
-        let result = '';
-        let lastIndex = 0;
-        
-        // Get all unique ranges in order
-        const sortedRanges = [...formattedMap.keys()]
-            .map(key => {
-                const [start, end] = key.split('_').map(Number);
-                return { start, end, key };
-            })
-            .sort((a, b) => a.start - b.start);
-        
-        for (const range of sortedRanges) {
-            // Add text before this range (preserve original whitespace)
-            if (range.start > lastIndex) {
-                result += cleanText.substring(lastIndex, range.start);
+            // EXACT Python line-by-line wrapping logic
+            // if entity.type == MessageEntity.PRE:
+            //     replacement = f"{prefix}{content}{suffix}"
+            // else:
+            //     lines = content.split('\n')
+            //     wrapped_lines = []
+            //     for line in lines:
+            //         if line.strip():
+            //             wrapped_lines.append(f"{prefix}{line.strip()}{suffix}")
+            //         else:
+            //             wrapped_lines.append('')
+            //     replacement = '\n'.join(wrapped_lines)
+            
+            let replacement;
+            if (type === 'MessageEntityPre') {
+                // PRE formatting - wrap entire content
+                replacement = prefix + content + suffix;
+            } else {
+                // For other types, process line by line
+                const lines = content.split('\n');
+                const wrappedLines = [];
+                for (const line of lines) {
+                    if (line.trim()) {
+                        wrappedLines.push(prefix + line.trim() + suffix);
+                    } else {
+                        wrappedLines.push('');
+                    }
+                }
+                replacement = wrappedLines.join('\n');
             }
             
-            // Add formatted content for this range
-            result += formattedMap.get(range.key);
-            lastIndex = range.end;
+            // Replace the original section in textArray
+            // Since we're processing in reverse order, indices won't shift for earlier entities
+            textArray.splice(start, end - start, replacement);
         }
         
-        // Add any remaining text after the last range
-        if (lastIndex < cleanText.length) {
-            result += cleanText.substring(lastIndex);
-        }
+        // Join the array back into a string
+        let result = textArray.join('');
+        
+        // Now handle blockquotes - we need to remove blockquote markers but preserve inner formatting
+        // Blockquote in Telegram is just a marker, not actual formatting in the text
+        // So we don't need to do anything special - the content inside blockquote already has its formatting
         
         // Apply EXACT Python cleanup function
         const cleanedResult = cleanWhitespace(result);
