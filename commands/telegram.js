@@ -1,10 +1,11 @@
 const { Telegraf } = require('telegraf');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
+const { NewMessage } = require('telegram/events');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const input = require('input'); // For prompts if needed
+const input = require('input');
 
 const CONFIG_FILE = path.join(process.cwd(), 'data', 'telegram_bridge.json');
 const TEMP_DIR = path.join(process.cwd(), 'temp');
@@ -15,9 +16,9 @@ let botInstance = null;
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-// API credentials (you need these from my.telegram.org)
-const API_ID = 123456; // Replace with your API ID
-const API_HASH = 'your_api_hash_here'; // Replace with your API hash
+// You need to get these from my.telegram.org
+const API_ID = 123456; // REPLACE WITH YOUR API ID
+const API_HASH = 'your_api_hash_here'; // REPLACE WITH YOUR API HASH
 
 function loadConfig() {
     try {
@@ -58,18 +59,22 @@ async function initTelegramClient(sessionString) {
 }
 
 // Download file using Telethon client (supports up to 2GB)
-async function downloadTelegramFileWithClient(client, message, fileId, fileName) {
+async function downloadTelegramFileWithClient(client, message) {
     try {
-        const tempFile = path.join(TEMP_DIR, `telegram_${Date.now()}_${fileName}`);
+        const tempFile = path.join(TEMP_DIR, `telegram_${Date.now()}_${message.id}`);
         
         // Download using the client
-        const buffer = await client.downloadMedia(message, {
+        await client.downloadMedia(message, {
             progressCallback: (downloaded, total) => {
                 const percent = Math.round((downloaded / total) * 100);
                 console.log(`Download progress: ${percent}%`);
-            }
+            },
+            outputFile: tempFile
         });
         
+        // Read the downloaded file
+        const buffer = fs.readFileSync(tempFile);
+        fs.unlinkSync(tempFile); // Clean up
         return buffer;
     } catch (error) {
         console.error('Download error with client:', error);
@@ -110,13 +115,13 @@ async function startTelegramBot(sock, chatId) {
             // Use Telethon client for 2GB downloads
             telegramClient = await initTelegramClient(config.sessionString);
             
-            // Set up message handler for the client
+            // Set up message handler for the client - CORRECT SYNTAX
             telegramClient.addEventHandler(async (event) => {
                 const message = event.message;
-                if (!message || !message.message) return;
+                if (!message || !message.text) return;
                 
                 // Skip commands
-                if (message.message.startsWith('/')) return;
+                if (message.text.startsWith('/')) return;
                 
                 const whatsappJid = config.whatsappNumber.includes('@s.whatsapp.net') ?
                     config.whatsappNumber :
@@ -124,52 +129,46 @@ async function startTelegramBot(sock, chatId) {
                 
                 try {
                     // Handle text
-                    if (message.message) {
-                        await sock.sendMessage(whatsappJid, { text: message.message });
-                        console.log(`✅ Text forwarded: ${message.message.substring(0, 30)}...`);
+                    if (message.text) {
+                        await sock.sendMessage(whatsappJid, { text: message.text });
+                        console.log(`✅ Text forwarded: ${message.text.substring(0, 30)}...`);
                     }
                     
                     // Handle media
                     if (message.media) {
-                        const fileName = message.file?.name || `file_${Date.now()}`;
-                        const buffer = await downloadTelegramFileWithClient(
-                            telegramClient, 
-                            message, 
-                            message.media.id,
-                            fileName
-                        );
+                        const buffer = await downloadTelegramFileWithClient(telegramClient, message);
                         
                         if (buffer) {
                             if (message.photo) {
                                 await sock.sendMessage(whatsappJid, {
                                     image: buffer,
-                                    caption: message.message || ''
+                                    caption: message.text || ''
                                 });
                             } else if (message.document) {
                                 await sock.sendMessage(whatsappJid, {
                                     document: buffer,
-                                    fileName: fileName,
-                                    mimetype: message.document.mimeType || 'application/octet-stream',
-                                    caption: message.message || ''
+                                    fileName: message.file.name || `file_${Date.now()}`,
+                                    mimetype: message.file.mimeType || 'application/octet-stream',
+                                    caption: message.text || ''
                                 });
                             } else if (message.video) {
                                 await sock.sendMessage(whatsappJid, {
                                     video: buffer,
-                                    caption: message.message || ''
+                                    caption: message.text || ''
                                 });
                             } else if (message.audio) {
                                 await sock.sendMessage(whatsappJid, {
                                     audio: buffer,
-                                    caption: message.message || ''
+                                    caption: message.text || ''
                                 });
                             }
-                            console.log(`✅ Media forwarded: ${fileName}`);
+                            console.log(`✅ Media forwarded`);
                         }
                     }
                 } catch (err) {
                     console.error('Forward error:', err);
                 }
-            }, new telegramClient._handlers.NewMessage({}));
+            }, new NewMessage({}));
             
             await sock.sendMessage(chatId, { 
                 text: `✅ *Telegram Client Active*\n📱 Using session string (2GB file support)` 
@@ -194,8 +193,8 @@ async function startTelegramBot(sock, chatId) {
                         await sock.sendMessage(whatsappJid, { text: ctx.message.text });
                     }
                     
-                    // Handle media (20MB limit via bot API)
-                    // ... (rest of media handling code)
+                    // Media handling for bot token would go here
+                    // (similar to before but with 20MB limit)
                     
                 } catch (err) {
                     console.error('Forward error:', err);
