@@ -86,32 +86,27 @@ async function downloadMedia(client, message) {
 function cleanWhitespace(text) {
     if (!text) return text;
     
-    // Same as Python: re.sub(r'[ \t]+', ' ', text)
-    // Replace multiple spaces/tabs with single space
+    // Don't trim the entire text - preserve trailing whitespace
+    // Only collapse multiple spaces/tabs to single space
     text = text.replace(/[ \t]+/g, ' ');
     
-    // Same as Python: re.sub(r'\n{3,}', '\n\n', text)
     // Reduce multiple newlines to max 2
     text = text.replace(/\n{3,}/g, '\n\n');
-    
-    // Same as Python: text.strip()
-    // Remove leading/trailing whitespace
-    text = text.trim();
     
     return text;
 }
 
 function wrapLines(content, prefix, suffix) {
-    // Same as Python function that wraps each line individually
     // Only wraps non-empty lines, preserves empty lines
+    // Preserves original whitespace within lines
     
     const lines = content.split('\n');
     const wrappedLines = [];
     
     for (const line of lines) {
         if (line.trim()) {
-            // Only wrap non-empty lines
-            wrappedLines.push(prefix + line.trim() + suffix);
+            // Only wrap non-empty lines, but preserve original line content
+            wrappedLines.push(prefix + line + suffix);
         } else {
             // Preserve empty lines
             wrappedLines.push('');
@@ -150,6 +145,9 @@ function convertTelegramToWhatsApp(text, entities) {
     
     // If we have entities, use them for accurate formatting
     if (entities && entities.length > 0) {
+        // Track which entities we've processed to avoid duplicates
+        const processedEntities = new Set();
+        
         // Sort entities by offset (ascending) to process from start to end
         const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
         
@@ -158,6 +156,13 @@ function convertTelegramToWhatsApp(text, entities) {
         let lastIndex = 0;
         
         for (const entity of sortedEntities) {
+            // Skip if we've already processed this entity (for overlapping entities)
+            const entityKey = `${entity.className}_${entity.offset}_${entity.length}`;
+            if (processedEntities.has(entityKey)) {
+                continue;
+            }
+            processedEntities.add(entityKey);
+            
             const start = entity.offset;
             const end = start + entity.length;
             
@@ -181,27 +186,27 @@ function convertTelegramToWhatsApp(text, entities) {
             
             switch (entity.className) {
                 case 'MessageEntityBold':
-                    // Use line-by-line wrapping like Python script
+                    // Use line-by-line wrapping
                     formattedContent = wrapLines(content, '*', '*');
-                    log('INFO', 'Applied BOLD formatting with line wrapping', { 
+                    log('INFO', 'Applied BOLD formatting', { 
                         original: content, 
                         formatted: formattedContent 
                     });
                     break;
                     
                 case 'MessageEntityItalic':
-                    // Use line-by-line wrapping like Python script
+                    // Use line-by-line wrapping
                     formattedContent = wrapLines(content, '_', '_');
-                    log('INFO', 'Applied ITALIC formatting with line wrapping', { 
+                    log('INFO', 'Applied ITALIC formatting', { 
                         original: content, 
                         formatted: formattedContent 
                     });
                     break;
                     
                 case 'MessageEntityStrike':
-                    // Use line-by-line wrapping like Python script
+                    // Use line-by-line wrapping
                     formattedContent = wrapLines(content, '~', '~');
-                    log('INFO', 'Applied STRIKETHROUGH formatting with line wrapping', { 
+                    log('INFO', 'Applied STRIKETHROUGH formatting', { 
                         original: content, 
                         formatted: formattedContent 
                     });
@@ -218,11 +223,10 @@ function convertTelegramToWhatsApp(text, entities) {
                     break;
                     
                 case 'MessageEntityBlockquote':
-                    // WhatsApp doesn't support blockquotes, so just use the content
+                    // Blockquote - just use plain text (no formatting)
                     formattedContent = content;
-                    log('INFO', 'Removed BLOCKQUOTE formatting', { 
-                        original: content, 
-                        formatted: formattedContent 
+                    log('INFO', 'Keeping BLOCKQUOTE as plain text', { 
+                        content
                     });
                     break;
                     
@@ -249,7 +253,7 @@ function convertTelegramToWhatsApp(text, entities) {
             result += cleanText.substring(lastIndex);
         }
         
-        // Apply final whitespace cleanup (same as Python)
+        // Apply whitespace cleanup (but preserve trailing whitespace)
         const cleanedResult = cleanWhitespace(result);
         
         log('INFO', 'Final formatted text', {
@@ -271,7 +275,7 @@ function convertTelegramToWhatsApp(text, entities) {
     formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');        // Strikethrough
     formatted = formatted.replace(/`(.*?)`/g, '```$1```');      // Code
     
-    // Apply final whitespace cleanup
+    // Apply whitespace cleanup (preserve trailing)
     formatted = cleanWhitespace(formatted);
     
     log('INFO', 'Final formatted text (regex method)', {
