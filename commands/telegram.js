@@ -30,13 +30,17 @@ const WHATSAPP_GROUPS = [
     "120363161222427319@g.us"   // Fifth group
 ];
 
-// Logger function with timestamps
+// Logger function with timestamps - FIXED to handle BigInt
 function log(level, message, data = null) {
     const timestamp = new Date().toISOString();
-    const logMessage = `[${timestamp}] [${level}] ${message}`;
+    let logMessage = `[${timestamp}] [${level}] ${message}`;
     console.log(logMessage);
     if (data) {
-        console.log(JSON.stringify(data, null, 2));
+        // Convert BigInt values to strings for logging
+        const processedData = JSON.parse(JSON.stringify(data, (key, value) => 
+            typeof value === 'bigint' ? value.toString() : value
+        ));
+        console.log(JSON.stringify(processedData, null, 2));
     }
     const logDir = path.join(process.cwd(), 'logs');
     if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
@@ -222,7 +226,7 @@ async function sendToWhatsApp(sock, messageData, targetType) {
                         caption: messageData.caption,
                         mimetype: messageData.mimeType
                     });
-                    log('INFO', 'Large file sent as document', { target: jid, sizeMB });
+                    log('INFO', 'Large file sent as document', { target: jid, sizeMB: Math.round(fileSizeMB * 100) / 100 });
                 } else {
                     if (messageData.mediaType === 'photo') {
                         await sock.sendMessage(jid, {
@@ -267,7 +271,7 @@ function initTelegramBot() {
             `• ❌ *Cancel* - Don't forward`;
         
         ctx.reply(helpMessage, { parse_mode: 'Markdown' });
-        log('INFO', 'Start command responded', { chatId: ctx.chat.id });
+        log('INFO', 'Start command responded', { chatId: ctx.chat.id.toString() });
     });
     
     telegramBot.on('callback_query', async (ctx) => {
@@ -323,7 +327,7 @@ function initTelegramBot() {
 }
 
 async function startTelegramBot(sock, chatId) {
-    log('INFO', 'Starting Telegram bot', { chatId });
+    log('INFO', 'Starting Telegram bot', { chatId: chatId.toString() });
 
     try {
         if (telegramClient) await telegramClient.disconnect();
@@ -359,13 +363,13 @@ async function startTelegramBot(sock, chatId) {
                 }
                 
                 log('INFO', '📨 MESSAGE RECEIVED', {
-                    messageId: msg.id,
+                    messageId: msg.id.toString(),
                     hasText: !!msg.text,
                     hasMedia: !!msg.media
                 });
                 
                 // Get the chat ID to send confirmation back
-                const chatId = msg.chatId?.value || msg.peerId?.userId;
+                const chatId = msg.chatId?.value?.toString() || msg.peerId?.userId?.toString();
                 if (!chatId) {
                     log('ERROR', 'Cannot determine chat ID');
                     return;
@@ -385,7 +389,7 @@ async function startTelegramBot(sock, chatId) {
                 
                 // Handle media if present
                 if (msg.media && msg.media.className !== 'MessageMediaWebPage') {
-                    log('DEBUG', 'Downloading media', { messageId: msg.id });
+                    log('DEBUG', 'Downloading media', { messageId: msg.id.toString() });
                     
                     const mediaResult = await downloadMedia(telegramClient, msg);
                     
@@ -453,7 +457,7 @@ async function startTelegramBot(sock, chatId) {
                 
                 // Send confirmation back to the same chat
                 await telegramBot.telegram.sendMessage(
-                    chatId,
+                    parseInt(chatId),
                     confirmationMessage,
                     {
                         parse_mode: 'Markdown',
@@ -473,7 +477,7 @@ async function startTelegramBot(sock, chatId) {
                 
                 log('INFO', '✅ Confirmation sent', { 
                     chatId, 
-                    messageId: msg.id 
+                    messageId: msg.id.toString() 
                 });
                 
             } catch (err) {
