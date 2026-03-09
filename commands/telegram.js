@@ -62,6 +62,44 @@ async function downloadMedia(client, message) {
     }
 }
 
+function cleanWhitespace(text) {
+    if (!text) return text;
+    
+    // Same as Python: re.sub(r'[ \t]+', ' ', text)
+    // Replace multiple spaces/tabs with single space
+    text = text.replace(/[ \t]+/g, ' ');
+    
+    // Same as Python: re.sub(r'\n{3,}', '\n\n', text)
+    // Reduce multiple newlines to max 2
+    text = text.replace(/\n{3,}/g, '\n\n');
+    
+    // Same as Python: text.strip()
+    // Remove leading/trailing whitespace
+    text = text.trim();
+    
+    return text;
+}
+
+function wrapLines(content, prefix, suffix) {
+    // Same as Python function that wraps each line individually
+    // Only wraps non-empty lines, preserves empty lines
+    
+    const lines = content.split('\n');
+    const wrappedLines = [];
+    
+    for (const line of lines) {
+        if (line.trim()) {
+            // Only wrap non-empty lines
+            wrappedLines.push(prefix + line.trim() + suffix);
+        } else {
+            // Preserve empty lines
+            wrappedLines.push('');
+        }
+    }
+    
+    return wrappedLines.join('\n');
+}
+
 function convertTelegramToWhatsApp(text, entities) {
     if (!text) return text;
     
@@ -122,24 +160,27 @@ function convertTelegramToWhatsApp(text, entities) {
             
             switch (entity.className) {
                 case 'MessageEntityBold':
-                    formattedContent = `*${content}*`;
-                    log('INFO', 'Applied BOLD formatting', { 
+                    // Use line-by-line wrapping like Python script
+                    formattedContent = wrapLines(content, '*', '*');
+                    log('INFO', 'Applied BOLD formatting with line wrapping', { 
                         original: content, 
                         formatted: formattedContent 
                     });
                     break;
                     
                 case 'MessageEntityItalic':
-                    formattedContent = `_${content}_`;
-                    log('INFO', 'Applied ITALIC formatting', { 
+                    // Use line-by-line wrapping like Python script
+                    formattedContent = wrapLines(content, '_', '_');
+                    log('INFO', 'Applied ITALIC formatting with line wrapping', { 
                         original: content, 
                         formatted: formattedContent 
                     });
                     break;
                     
                 case 'MessageEntityStrike':
-                    formattedContent = `~${content}~`;
-                    log('INFO', 'Applied STRIKETHROUGH formatting', { 
+                    // Use line-by-line wrapping like Python script
+                    formattedContent = wrapLines(content, '~', '~');
+                    log('INFO', 'Applied STRIKETHROUGH formatting with line wrapping', { 
                         original: content, 
                         formatted: formattedContent 
                     });
@@ -147,6 +188,7 @@ function convertTelegramToWhatsApp(text, entities) {
                     
                 case 'MessageEntityCode':
                 case 'MessageEntityPre':
+                    // For code blocks, preserve newlines but wrap entire block
                     formattedContent = '```' + content + '```';
                     log('INFO', 'Applied CODE formatting', { 
                         original: content, 
@@ -186,18 +228,37 @@ function convertTelegramToWhatsApp(text, entities) {
             result += cleanText.substring(lastIndex);
         }
         
+        // Apply final whitespace cleanup (same as Python)
+        const cleanedResult = cleanWhitespace(result);
+        
         log('INFO', 'Final formatted text', {
             originalLength: text.length,
-            finalLength: result.length,
-            formatted: result
+            finalLength: cleanedResult.length,
+            formatted: cleanedResult
         });
         
-        return result;
+        return cleanedResult;
     }
     
     // Fallback to regex if no entities available
     log('DEBUG', 'No entities found, using regex fallback');
-    return cleanText;
+    
+    // Convert Telegram markdown to WhatsApp format
+    let formatted = text;
+    formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');     // Bold
+    formatted = formatted.replace(/__(.*?)__/g, '_$1_');        // Italic
+    formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');        // Strikethrough
+    formatted = formatted.replace(/`(.*?)`/g, '```$1```');      // Code
+    
+    // Apply final whitespace cleanup
+    formatted = cleanWhitespace(formatted);
+    
+    log('INFO', 'Final formatted text (regex method)', {
+        original: text,
+        formatted: formatted
+    });
+    
+    return formatted;
 }
 
 async function startTelegramBot(sock, chatId) {
