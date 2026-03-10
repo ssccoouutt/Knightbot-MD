@@ -30,8 +30,8 @@ async function channelCommand(sock, chatId, message, args) {
                 externalAdReply: {
                     title: 'Tech Zone',
                     body: 'Official Announcements',
-                    thumbnailUrl: 'https://i.ibb.co/your-thumbnail.jpg', // Optional
-                    sourceUrl: 'https://whatsapp.com/channel/0029Va90zAnIHphOuO8Msp3A',
+                    thumbnailUrl: '', // Optional
+                    sourceUrl: 'https://whatsapp.com/channel/0029VacnMpyHrDZldKwMod38',
                     mediaType: 1,
                     renderLargerThumbnail: false
                 }
