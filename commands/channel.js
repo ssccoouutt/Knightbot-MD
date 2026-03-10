@@ -10,7 +10,7 @@ async function channelCommand(sock, chatId, message, args) {
             return;
         }
 
-        const channelJid = '120363304414452603@newsletter';
+        const channelJid = '120363405181626845@newsletter';
         const messageText = args.join(' ').trim();
 
         // Send typing indicator to channel
