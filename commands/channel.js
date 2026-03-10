@@ -70,12 +70,11 @@ async function channelCommand(sock, chatId, message, args) {
             for await (const chunk of stream) {
                 buffer.push(chunk);
             }
-            const mediaBuffer = Buffer.concat(buffer);
             
             // Prepare message based on media type
             if (mediaType === 'image') {
                 finalMessage = {
-                    image: mediaBuffer,
+                    image: Buffer.concat(buffer),
                     caption: finalCaption,
                     mimetype: mediaData.mimetype,
                     contextInfo: {
@@ -90,7 +89,7 @@ async function channelCommand(sock, chatId, message, args) {
                 };
             } else if (mediaType === 'video') {
                 finalMessage = {
-                    video: mediaBuffer,
+                    video: Buffer.concat(buffer),
                     caption: finalCaption,
                     mimetype: mediaData.mimetype,
                     contextInfo: {
@@ -105,7 +104,7 @@ async function channelCommand(sock, chatId, message, args) {
                 };
             } else if (mediaType === 'audio') {
                 finalMessage = {
-                    audio: mediaBuffer,
+                    audio: Buffer.concat(buffer),
                     mimetype: mediaData.mimetype,
                     ptt: mediaData.ptt || false,
                     contextInfo: {
@@ -120,7 +119,7 @@ async function channelCommand(sock, chatId, message, args) {
                 };
             } else if (mediaType === 'document') {
                 finalMessage = {
-                    document: mediaBuffer,
+                    document: Buffer.concat(buffer),
                     mimetype: mediaData.mimetype,
                     fileName: mediaData.fileName || 'document',
                     caption: finalCaption,
@@ -136,7 +135,7 @@ async function channelCommand(sock, chatId, message, args) {
                 };
             } else if (mediaType === 'sticker') {
                 finalMessage = {
-                    sticker: mediaBuffer,
+                    sticker: Buffer.concat(buffer),
                     mimetype: mediaData.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
