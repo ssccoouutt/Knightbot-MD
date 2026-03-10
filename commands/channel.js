@@ -70,11 +70,12 @@ async function channelCommand(sock, chatId, message, args) {
             for await (const chunk of stream) {
                 buffer.push(chunk);
             }
+            const mediaBuffer = Buffer.concat(buffer);
             
             // Prepare message based on media type
             if (mediaType === 'image') {
                 finalMessage = {
-                    image: Buffer.concat(buffer),
+                    image: mediaBuffer,
                     caption: finalCaption,
                     mimetype: mediaData.mimetype,
                     contextInfo: {
@@ -89,7 +90,7 @@ async function channelCommand(sock, chatId, message, args) {
                 };
             } else if (mediaType === 'video') {
                 finalMessage = {
-                    video: Buffer.concat(buffer),
+                    video: mediaBuffer,
                     caption: finalCaption,
                     mimetype: mediaData.mimetype,
                     contextInfo: {
@@ -104,7 +105,7 @@ async function channelCommand(sock, chatId, message, args) {
                 };
             } else if (mediaType === 'audio') {
                 finalMessage = {
-                    audio: Buffer.concat(buffer),
+                    audio: mediaBuffer,
                     mimetype: mediaData.mimetype,
                     ptt: mediaData.ptt || false,
                     contextInfo: {
@@ -119,7 +120,7 @@ async function channelCommand(sock, chatId, message, args) {
                 };
             } else if (mediaType === 'document') {
                 finalMessage = {
-                    document: Buffer.concat(buffer),
+                    document: mediaBuffer,
                     mimetype: mediaData.mimetype,
                     fileName: mediaData.fileName || 'document',
                     caption: finalCaption,
@@ -135,7 +136,7 @@ async function channelCommand(sock, chatId, message, args) {
                 };
             } else if (mediaType === 'sticker') {
                 finalMessage = {
-                    sticker: Buffer.concat(buffer),
+                    sticker: mediaBuffer,
                     mimetype: mediaData.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -162,7 +163,7 @@ async function channelCommand(sock, chatId, message, args) {
                 }
                 finalMessage = {
                     image: Buffer.concat(buffer),
-                    caption: finalCaption, // Changed from messageText to finalCaption
+                    caption: messageText,
                     mimetype: quotedMessage.imageMessage.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -183,7 +184,7 @@ async function channelCommand(sock, chatId, message, args) {
                 }
                 finalMessage = {
                     video: Buffer.concat(buffer),
-                    caption: finalCaption, // Changed from messageText to finalCaption
+                    caption: messageText,
                     mimetype: quotedMessage.videoMessage.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -227,7 +228,7 @@ async function channelCommand(sock, chatId, message, args) {
                     document: Buffer.concat(buffer),
                     mimetype: quotedMessage.documentMessage.mimetype,
                     fileName: quotedMessage.documentMessage.fileName || 'document',
-                    caption: finalCaption, // Changed from messageText to finalCaption
+                    caption: messageText,
                     contextInfo: {
                         forwardingScore: 1,
                         isForwarded: false,
