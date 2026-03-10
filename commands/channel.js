@@ -162,7 +162,7 @@ async function channelCommand(sock, chatId, message, args) {
                 }
                 finalMessage = {
                     image: Buffer.concat(buffer),
-                    caption: messageText,
+                    caption: finalCaption, // Changed from messageText to finalCaption
                     mimetype: quotedMessage.imageMessage.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -183,7 +183,7 @@ async function channelCommand(sock, chatId, message, args) {
                 }
                 finalMessage = {
                     video: Buffer.concat(buffer),
-                    caption: messageText,
+                    caption: finalCaption, // Changed from messageText to finalCaption
                     mimetype: quotedMessage.videoMessage.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -227,7 +227,7 @@ async function channelCommand(sock, chatId, message, args) {
                     document: Buffer.concat(buffer),
                     mimetype: quotedMessage.documentMessage.mimetype,
                     fileName: quotedMessage.documentMessage.fileName || 'document',
-                    caption: messageText,
+                    caption: finalCaption, // Changed from messageText to finalCaption
                     contextInfo: {
                         forwardingScore: 1,
                         isForwarded: false,
