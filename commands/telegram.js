@@ -10,10 +10,11 @@ let telegramClient = null;
 let isActive = false;
 let connectionReady = false;
 let telegramBot = null;
-let whatsappSock = null; // Store WhatsApp socket
+let whatsappSock = null;
 
-// Store pending messages for confirmation
+// Store pending messages
 const pendingMessages = new Map();
+const pendingDownloads = new Map();
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
@@ -22,21 +23,24 @@ const API_HASH = "064a66fe7097452e6ac8f4e8df28aa97";
 
 // HARDCODED VALUES
 const TELEGRAM_BOT_TOKEN = "8717510346:AAFi_8U7L0KCh13UzEu69EGc7j8qDteyu70";
-const BOT_ID = "8717510346"; // Bot's user ID
+const BOT_ID = "8717510346";
 const WHATSAPP_NUMBER = "923247220362";
+const CRITICAL_CHANNEL = "120363304414452603@newsletter";
 const WHATSAPP_GROUPS = [
-    "120363140590753276@g.us",  // Original group
+    "120363140590753276@g.us",
     "120363162260844407@g.us",
     "120363042237526273@g.us", 
     "120363023394033137@g.us",
-    "120363161222427319@g.us"   // Fifth group
+    "120363161222427319@g.us"
 ];
 
-// Rate limiting - add delays between sends
-const RATE_LIMIT_DELAY = 3000; // 3 seconds between sends
-const BATCH_SIZE = 2; // Send to 2 groups at a time max
+// ALL TARGETS = Channel + All Groups
+const ALL_TARGETS = [CRITICAL_CHANNEL, ...WHATSAPP_GROUPS];
 
-// Logger function with timestamps
+const RATE_LIMIT_DELAY = 3000;
+const BATCH_SIZE = 2;
+const KEEP_ALIVE_INTERVAL = 15000;
+
 function log(level, message, data = null) {
     const timestamp = new Date().toISOString();
     let logMessage = `[${timestamp}] [${level}] ${message}`;
@@ -55,7 +59,30 @@ function log(level, message, data = null) {
     );
 }
 
-// EXACT Python cleanup function
+// Keep connection alive
+function startKeepAlive() {
+    if (!telegramClient) return;
+    
+    const interval = setInterval(async () => {
+        if (!telegramClient || !telegramClient.connected) {
+            clearInterval(interval);
+            return;
+        }
+        
+        try {
+            await telegramClient.invoke({
+                _: 'ping',
+                ping_id: BigInt(Date.now())
+            });
+            log('DEBUG', 'Keep-alive ping sent');
+        } catch (err) {
+            log('WARN', 'Keep-alive failed', { error: err.message });
+        }
+    }, KEEP_ALIVE_INTERVAL);
+    
+    return interval;
+}
+
 function cleanWhitespace(text) {
     if (!text) return text;
     text = text.replace(/[ \t]+/g, ' ');
@@ -128,8 +155,12 @@ function convertTelegramToWhatsApp(text, entities) {
 }
 
 async function downloadMedia(client, message) {
+    const downloadId = `${message.id}_${Date.now()}`;
+    pendingDownloads.set(downloadId, { status: 'downloading', startTime: Date.now() });
+    
     try {
         if (message.media?.className === 'MessageMediaWebPage') {
+            pendingDownloads.delete(downloadId);
             return null;
         }
         
@@ -171,6 +202,7 @@ async function downloadMedia(client, message) {
                     type: message.photo ? 'photo' : message.video ? 'video' : 'document'
                 });
                 
+                pendingDownloads.delete(downloadId);
                 return {
                     buffer,
                     size: stats.size,
@@ -198,6 +230,7 @@ async function downloadMedia(client, message) {
             }
         }
         
+        pendingDownloads.delete(downloadId);
         log('ERROR', '❌ ALL download attempts failed', { 
             messageId: message.id,
             lastError: lastError?.message 
@@ -205,6 +238,7 @@ async function downloadMedia(client, message) {
         return null;
         
     } catch (error) {
+        pendingDownloads.delete(downloadId);
         log('ERROR', 'Media download failed completely', { 
             messageId: message.id,
             error: error.message 
@@ -213,44 +247,28 @@ async function downloadMedia(client, message) {
     }
 }
 
-async function sendToWhatsApp(messageData, targetType) {
+// ===== SEND TO ALL TARGETS (Channel + Groups) =====
+async function sendToAllTargets(messageData) {
     try {
         if (!whatsappSock) {
             log('ERROR', 'WhatsApp socket not available');
             return false;
         }
         
-        let targets = [];
-        
-        switch (targetType) {
-            case 'own':
-                targets = [WHATSAPP_NUMBER];
-                break;
-            case 'group':
-                targets = WHATSAPP_GROUPS;
-                break;
-            case 'cancel':
-                return false;
-        }
-        
-        log('INFO', `Sending to ${targets.length} targets`, { targetType });
+        log('INFO', `🚨 SENDING TO ALL ${ALL_TARGETS.length} TARGETS (Channel + ${WHATSAPP_GROUPS.length} Groups)`);
         
         let successCount = 0;
         let failedTargets = [];
         
-        // Process in batches to avoid overwhelming WhatsApp
-        for (let i = 0; i < targets.length; i += BATCH_SIZE) {
-            const batch = targets.slice(i, i + BATCH_SIZE);
+        // Process in batches to avoid overwhelming
+        for (let i = 0; i < ALL_TARGETS.length; i += BATCH_SIZE) {
+            const batch = ALL_TARGETS.slice(i, i + BATCH_SIZE);
             
-            // Send batch in parallel (2 at a time)
-            const batchPromises = batch.map(async (target, index) => {
-                const jid = target.includes('@') ? target : 
-                           targetType === 'own' ? `${target}@s.whatsapp.net` : `${target}@g.us`;
-                
+            const batchPromises = batch.map(async (target) => {
                 try {
                     if (messageData.type === 'text') {
-                        await whatsappSock.sendMessage(jid, { text: messageData.content });
-                        log('INFO', '✅ Text sent', { target: jid });
+                        await whatsappSock.sendMessage(target, { text: messageData.content });
+                        log('INFO', '✅ Text sent', { target });
                         successCount++;
                         
                     } else if (messageData.type === 'media') {
@@ -263,14 +281,8 @@ async function sendToWhatsApp(messageData, targetType) {
                         
                         const fileSizeMB = mediaSize / (1024 * 1024);
                         
-                        log('DEBUG', 'Sending media', {
-                            type: mediaType,
-                            size: `${fileSizeMB.toFixed(2)}MB`,
-                            target: jid
-                        });
-                        
                         if (fileSizeMB > 100) {
-                            await whatsappSock.sendMessage(jid, {
+                            await whatsappSock.sendMessage(target, {
                                 document: mediaBuffer,
                                 fileName: mediaFileName || 'file.bin',
                                 caption: mediaCaption,
@@ -278,56 +290,47 @@ async function sendToWhatsApp(messageData, targetType) {
                             });
                         } else {
                             if (mediaType === 'photo') {
-                                await whatsappSock.sendMessage(jid, {
+                                await whatsappSock.sendMessage(target, {
                                     image: mediaBuffer,
                                     caption: mediaCaption
                                 });
                             } else if (mediaType === 'video') {
-                                await whatsappSock.sendMessage(jid, {
+                                await whatsappSock.sendMessage(target, {
                                     video: mediaBuffer,
                                     caption: mediaCaption
                                 });
                             } else if (mediaType === 'document') {
-                                await whatsappSock.sendMessage(jid, {
+                                await whatsappSock.sendMessage(target, {
                                     document: mediaBuffer,
                                     fileName: mediaFileName,
                                     caption: mediaCaption,
                                     mimetype: mediaMimeType
                                 });
-                            } else if (mediaType === 'audio') {
-                                await whatsappSock.sendMessage(jid, {
-                                    audio: mediaBuffer,
-                                    caption: mediaCaption
-                                });
-                            } else if (mediaType === 'voice') {
-                                await whatsappSock.sendMessage(jid, {
-                                    audio: mediaBuffer,
-                                    ptt: true
-                                });
-                            } else if (mediaType === 'sticker') {
-                                await whatsappSock.sendMessage(jid, {
-                                    sticker: mediaBuffer
+                            } else {
+                                await whatsappSock.sendMessage(target, {
+                                    document: mediaBuffer,
+                                    fileName: mediaFileName || 'file',
+                                    caption: mediaCaption,
+                                    mimetype: mediaMimeType
                                 });
                             }
                         }
                         successCount++;
                     }
                     
-                    return { success: true, target: jid };
+                    return { success: true, target };
                     
                 } catch (err) {
-                    log('ERROR', `Failed to send to ${jid}`, { error: err.message });
-                    failedTargets.push(jid);
-                    return { success: false, target: jid, error: err.message };
+                    log('ERROR', `Failed to send to ${target}`, { error: err.message });
+                    failedTargets.push(target);
+                    return { success: false, target, error: err.message };
                 }
             });
             
-            // Wait for batch to complete
-            const batchResults = await Promise.allSettled(batchPromises);
+            await Promise.allSettled(batchPromises);
             
-            // IMPORTANT: Delay between batches to let WhatsApp breathe
-            if (i + BATCH_SIZE < targets.length) {
-                log('DEBUG', `Batch complete, waiting ${RATE_LIMIT_DELAY}ms before next batch...`);
+            // Delay between batches
+            if (i + BATCH_SIZE < ALL_TARGETS.length) {
                 await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
             }
         }
@@ -337,11 +340,11 @@ async function sendToWhatsApp(messageData, targetType) {
             return false;
         }
         
-        log('INFO', `✅ Successfully sent to all ${targets.length} targets`);
+        log('INFO', `✅ Successfully sent to ALL ${ALL_TARGETS.length} targets`);
         return true;
         
     } catch (error) {
-        log('ERROR', 'Send failed', { error: error.message });
+        log('ERROR', 'Send to all failed', { error: error.message });
         return false;
     }
 }
@@ -355,8 +358,8 @@ function initTelegramBot() {
             `🤖 *WhatsApp Forwarder Bot*\n\n` +
             `Send any message here and choose where to forward it.\n\n` +
             `*Options:*\n` +
-            `• 📱 *Own Chat* - Send to your WhatsApp\n` +
-            `• 👥 *Groups* - Send to ${WHATSAPP_GROUPS.length} groups\n` +
+            `• 👥 *ALL* - Send to Channel + ${WHATSAPP_GROUPS.length} groups\n` +
+            `• 📱 *Own Chat* - Send only to your WhatsApp\n` +
             `• ❌ *Cancel* - Don't forward`;
         
         ctx.reply(helpMessage, { parse_mode: 'Markdown' });
@@ -391,13 +394,53 @@ function initTelegramBot() {
                 return;
             }
             
-            const success = await sendToWhatsApp(messageData, target);
+            let success = false;
+            let targetText = '';
+            
+            if (target === 'all') {
+                success = await sendToAllTargets(messageData);
+                targetText = `Channel + ${WHATSAPP_GROUPS.length} groups`;
+            } else if (target === 'own') {
+                // Send only to own number
+                const jid = WHATSAPP_NUMBER.includes('@') ? 
+                    WHATSAPP_NUMBER : `${WHATSAPP_NUMBER}@s.whatsapp.net`;
+                
+                if (messageData.type === 'text') {
+                    await whatsappSock.sendMessage(jid, { text: messageData.content });
+                } else if (messageData.type === 'media') {
+                    const mediaBuffer = messageData.buffer;
+                    const mediaCaption = messageData.caption || '';
+                    const mediaFileName = messageData.fileName;
+                    const mediaMimeType = messageData.mimeType;
+                    const mediaType = messageData.mediaType;
+                    
+                    if (mediaType === 'photo') {
+                        await whatsappSock.sendMessage(jid, {
+                            image: mediaBuffer,
+                            caption: mediaCaption
+                        });
+                    } else if (mediaType === 'video') {
+                        await whatsappSock.sendMessage(jid, {
+                            video: mediaBuffer,
+                            caption: mediaCaption
+                        });
+                    } else {
+                        await whatsappSock.sendMessage(jid, {
+                            document: mediaBuffer,
+                            fileName: mediaFileName || 'file',
+                            caption: mediaCaption,
+                            mimetype: mediaMimeType
+                        });
+                    }
+                }
+                success = true;
+                targetText = 'your chat';
+            }
             
             if (success) {
-                const targetText = target === 'own' ? 'your chat' : `${WHATSAPP_GROUPS.length} groups`;
                 await ctx.editMessageText(`✅ Successfully forwarded to ${targetText}`);
             } else {
-                await ctx.editMessageText('❌ Failed to forward to some targets');
+                await ctx.editMessageText('❌ Failed to forward');
             }
             
         } catch (error) {
@@ -412,7 +455,6 @@ function initTelegramBot() {
 async function startTelegramBot(sock, chatId) {
     log('INFO', 'Starting Telegram bot', { chatId: chatId.toString() });
     
-    // Store WhatsApp socket
     whatsappSock = sock;
 
     try {
@@ -430,6 +472,9 @@ async function startTelegramBot(sock, chatId) {
             initTelegramBot();
         }
         
+        // Start keep-alive
+        const keepAliveInterval = startKeepAlive();
+        
         await new Promise(resolve => setTimeout(resolve, 2000));
         connectionReady = true;
         
@@ -438,7 +483,6 @@ async function startTelegramBot(sock, chatId) {
                 const msg = event.message;
                 if (!msg) return;
                 
-                // Get sender info
                 let senderId = null;
                 if (msg.fromId) {
                     if (msg.fromId.userId) senderId = msg.fromId.userId.toString();
@@ -524,16 +568,19 @@ async function startTelegramBot(sock, chatId) {
                             size: mediaResult.size
                         });
                     } else {
-                        log('ERROR', '❌ Media download failed', { messageId: msg.id.toString() });
+                        log('ERROR', '❌ Media download failed', { 
+                            messageId: msg.id.toString() 
+                        });
                         await telegramBot.telegram.sendMessage(
                             parseInt(chatId),
-                            `❌ Failed to download media. The message will NOT be forwarded.`,
+                            `❌ Failed to download media. Message cannot be forwarded.`,
                             {}
                         );
                         return;
                     }
                 }
                 
+                // Store for user confirmation
                 const pendingKey = `${chatId}_${msg.id}`;
                 pendingMessages.set(pendingKey, messageData);
                 
@@ -564,8 +611,8 @@ async function startTelegramBot(sock, chatId) {
                         reply_markup: {
                             inline_keyboard: [
                                 [
-                                    { text: '📱 Own Chat', callback_data: `confirm_${msg.id}_own` },
-                                    { text: '👥 Groups', callback_data: `confirm_${msg.id}_group` }
+                                    { text: '👥 ALL (Channel + Groups)', callback_data: `confirm_${msg.id}_all` },
+                                    { text: '📱 Own Chat', callback_data: `confirm_${msg.id}_own` }
                                 ],
                                 [
                                     { text: '❌ Cancel', callback_data: `confirm_${msg.id}_cancel` }
@@ -587,7 +634,9 @@ async function startTelegramBot(sock, chatId) {
         
         isActive = true;
         
-        await sock.sendMessage(chatId, { text: '✅ Bridge active - Send messages to the bot to forward to WhatsApp' });
+        await sock.sendMessage(chatId, { 
+            text: `✅ Bridge active\n👥 ALL = Channel + ${WHATSAPP_GROUPS.length} groups` 
+        });
         return true;
         
     } catch (error) {
@@ -602,7 +651,7 @@ async function telegramCommand(sock, chatId, message, args) {
     
     if (!sub) {
         await sock.sendMessage(chatId, { 
-            text: `📊 Status\nActive: ${isActive ? '✅' : '❌'}\nWhatsApp: ${WHATSAPP_NUMBER}\nGroups: ${WHATSAPP_GROUPS.length}\n\nCommands:\n.on - Start\n.off - Stop`
+            text: `📊 Status\nActive: ${isActive ? '✅' : '❌'}\nChannel: ${CRITICAL_CHANNEL}\nGroups: ${WHATSAPP_GROUPS.length}\nWhatsApp: ${WHATSAPP_NUMBER}\n\nCommands:\n.on - Start\n.off - Stop`
         });
         return;
     }
