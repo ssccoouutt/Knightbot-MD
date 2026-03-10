@@ -8,11 +8,18 @@ async function channelCommand(sock, chatId, message, args) {
         const messageText = args.join(' ').trim();
         
         // Check if there's any media in the message
-        const hasMedia = message.message?.imageMessage || 
-                        message.message?.videoMessage || 
-                        message.message?.audioMessage || 
-                        message.message?.documentMessage || 
-                        message.message?.stickerMessage;
+        // The message object structure is different for media messages
+        const mediaTypes = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'];
+        let hasMedia = false;
+        let mediaType = null;
+        
+        for (const type of mediaTypes) {
+            if (message.message?.[type]) {
+                hasMedia = true;
+                mediaType = type;
+                break;
+            }
+        }
         
         // If no message text and no media, show usage
         if (!messageText && !hasMedia) {
@@ -26,14 +33,14 @@ async function channelCommand(sock, chatId, message, args) {
         await sock.sendPresenceUpdate('composing', channelJid);
 
         let finalMessage = {};
+        const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
         
         // Check if message contains media directly
         if (hasMedia) {
-            const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
-            
-            if (message.message?.imageMessage) {
+            if (mediaType === 'imageMessage') {
                 // Handle image
-                const stream = await downloadContentFromMessage(message.message.imageMessage, 'image');
+                const mediaData = message.message.imageMessage;
+                const stream = await downloadContentFromMessage(mediaData, 'image');
                 const buffer = [];
                 for await (const chunk of stream) {
                     buffer.push(chunk);
@@ -41,7 +48,7 @@ async function channelCommand(sock, chatId, message, args) {
                 finalMessage = {
                     image: Buffer.concat(buffer),
                     caption: messageText || '',
-                    mimetype: message.message.imageMessage.mimetype,
+                    mimetype: mediaData.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
                         isForwarded: false,
@@ -52,9 +59,10 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
-            } else if (message.message?.videoMessage) {
+            } else if (mediaType === 'videoMessage') {
                 // Handle video
-                const stream = await downloadContentFromMessage(message.message.videoMessage, 'video');
+                const mediaData = message.message.videoMessage;
+                const stream = await downloadContentFromMessage(mediaData, 'video');
                 const buffer = [];
                 for await (const chunk of stream) {
                     buffer.push(chunk);
@@ -62,7 +70,7 @@ async function channelCommand(sock, chatId, message, args) {
                 finalMessage = {
                     video: Buffer.concat(buffer),
                     caption: messageText || '',
-                    mimetype: message.message.videoMessage.mimetype,
+                    mimetype: mediaData.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
                         isForwarded: false,
@@ -73,17 +81,18 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
-            } else if (message.message?.audioMessage) {
+            } else if (mediaType === 'audioMessage') {
                 // Handle audio
-                const stream = await downloadContentFromMessage(message.message.audioMessage, 'audio');
+                const mediaData = message.message.audioMessage;
+                const stream = await downloadContentFromMessage(mediaData, 'audio');
                 const buffer = [];
                 for await (const chunk of stream) {
                     buffer.push(chunk);
                 }
                 finalMessage = {
                     audio: Buffer.concat(buffer),
-                    mimetype: message.message.audioMessage.mimetype,
-                    ptt: message.message.audioMessage.ptt || false,
+                    mimetype: mediaData.mimetype,
+                    ptt: mediaData.ptt || false,
                     contextInfo: {
                         forwardingScore: 1,
                         isForwarded: false,
@@ -94,17 +103,18 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
-            } else if (message.message?.documentMessage) {
+            } else if (mediaType === 'documentMessage') {
                 // Handle document
-                const stream = await downloadContentFromMessage(message.message.documentMessage, 'document');
+                const mediaData = message.message.documentMessage;
+                const stream = await downloadContentFromMessage(mediaData, 'document');
                 const buffer = [];
                 for await (const chunk of stream) {
                     buffer.push(chunk);
                 }
                 finalMessage = {
                     document: Buffer.concat(buffer),
-                    mimetype: message.message.documentMessage.mimetype,
-                    fileName: message.message.documentMessage.fileName || 'document',
+                    mimetype: mediaData.mimetype,
+                    fileName: mediaData.fileName || 'document',
                     caption: messageText || '',
                     contextInfo: {
                         forwardingScore: 1,
@@ -116,16 +126,17 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
-            } else if (message.message?.stickerMessage) {
+            } else if (mediaType === 'stickerMessage') {
                 // Handle sticker
-                const stream = await downloadContentFromMessage(message.message.stickerMessage, 'sticker');
+                const mediaData = message.message.stickerMessage;
+                const stream = await downloadContentFromMessage(mediaData, 'sticker');
                 const buffer = [];
                 for await (const chunk of stream) {
                     buffer.push(chunk);
                 }
                 finalMessage = {
                     sticker: Buffer.concat(buffer),
-                    mimetype: message.message.stickerMessage.mimetype,
+                    mimetype: mediaData.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
                         isForwarded: false,
@@ -137,28 +148,10 @@ async function channelCommand(sock, chatId, message, args) {
                     }
                 };
             }
-        } else {
-            // Handle text only message
-            finalMessage = {
-                text: messageText,
-                contextInfo: {
-                    forwardingScore: 1,
-                    isForwarded: false,
-                    forwardedNewsletterMessageInfo: {
-                        newsletterJid: channelJid,
-                        newsletterName: 'Tech Zone',
-                        serverMessageId: -1
-                    }
-                }
-            };
-        }
-
+        } 
         // Check if this is a reply to a message (to forward quoted media)
-        const quotedMessage = message.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        
-        // If replying to media and no direct media in message, forward the quoted media
-        if (quotedMessage && !hasMedia) {
-            const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+        else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
+            const quotedMessage = message.message.extendedTextMessage.contextInfo.quotedMessage;
             
             if (quotedMessage.imageMessage) {
                 // Forward image
@@ -265,7 +258,35 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
+            } else {
+                // If quoted message is not media, send as text
+                finalMessage = {
+                    text: messageText || 'Forwarded message',
+                    contextInfo: {
+                        forwardingScore: 1,
+                        isForwarded: false,
+                        forwardedNewsletterMessageInfo: {
+                            newsletterJid: channelJid,
+                            newsletterName: 'Tech Zone',
+                            serverMessageId: -1
+                        }
+                    }
+                };
             }
+        } else {
+            // Handle text only message
+            finalMessage = {
+                text: messageText,
+                contextInfo: {
+                    forwardingScore: 1,
+                    isForwarded: false,
+                    forwardedNewsletterMessageInfo: {
+                        newsletterJid: channelJid,
+                        newsletterName: 'Tech Zone',
+                        serverMessageId: -1
+                    }
+                }
+            };
         }
 
         // Send to channel
@@ -274,17 +295,19 @@ async function channelCommand(sock, chatId, message, args) {
         // Determine what was sent for confirmation message
         let sentType = 'text message';
         if (hasMedia) {
-            if (message.message?.imageMessage) sentType = 'image';
-            else if (message.message?.videoMessage) sentType = 'video';
-            else if (message.message?.audioMessage) sentType = 'audio';
-            else if (message.message?.documentMessage) sentType = 'document';
-            else if (message.message?.stickerMessage) sentType = 'sticker';
-        } else if (quotedMessage) {
-            if (quotedMessage.imageMessage) sentType = 'image (forwarded)';
-            else if (quotedMessage.videoMessage) sentType = 'video (forwarded)';
-            else if (quotedMessage.audioMessage) sentType = 'audio (forwarded)';
-            else if (quotedMessage.documentMessage) sentType = 'document (forwarded)';
-            else if (quotedMessage.stickerMessage) sentType = 'sticker (forwarded)';
+            if (mediaType === 'imageMessage') sentType = 'image';
+            else if (mediaType === 'videoMessage') sentType = 'video';
+            else if (mediaType === 'audioMessage') sentType = 'audio';
+            else if (mediaType === 'documentMessage') sentType = 'document';
+            else if (mediaType === 'stickerMessage') sentType = 'sticker';
+        } else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
+            const quoted = message.message.extendedTextMessage.contextInfo.quotedMessage;
+            if (quoted.imageMessage) sentType = 'image (forwarded)';
+            else if (quoted.videoMessage) sentType = 'video (forwarded)';
+            else if (quoted.audioMessage) sentType = 'audio (forwarded)';
+            else if (quoted.documentMessage) sentType = 'document (forwarded)';
+            else if (quoted.stickerMessage) sentType = 'sticker (forwarded)';
+            else sentType = 'forwarded message';
         }
 
         // Confirm to the user
