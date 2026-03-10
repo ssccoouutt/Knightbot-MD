@@ -16,7 +16,7 @@ async function channelCommand(sock, chatId, message, args) {
         // Send typing indicator to channel
         await sock.sendPresenceUpdate('composing', channelJid);
 
-        // Prepare the message with context info
+        // Prepare the message with minimal context info
         const channelMessage = {
             text: messageText,
             contextInfo: {
@@ -26,14 +26,6 @@ async function channelCommand(sock, chatId, message, args) {
                     newsletterJid: channelJid,
                     newsletterName: 'Tech Zone',
                     serverMessageId: -1
-                },
-                externalAdReply: {
-                    title: 'Tech Zone',
-                    body: 'Official Announcements',
-                    thumbnailUrl: '', // Optional
-                    sourceUrl: 'https://whatsapp.com/channel/0029VacnMpyHrDZldKwMod38',
-                    mediaType: 1,
-                    renderLargerThumbnail: false
                 }
             }
         };
@@ -58,7 +50,15 @@ async function channelCommand(sock, chatId, message, args) {
                     image: Buffer.concat(buffer),
                     caption: messageText,
                     mimetype: quotedMessage.imageMessage.mimetype,
-                    contextInfo: channelMessage.contextInfo
+                    contextInfo: {
+                        forwardingScore: 1,
+                        isForwarded: false,
+                        forwardedNewsletterMessageInfo: {
+                            newsletterJid: channelJid,
+                            newsletterName: 'Tech Zone',
+                            serverMessageId: -1
+                        }
+                    }
                 };
             } else if (quotedMessage.videoMessage) {
                 // Forward video
@@ -71,7 +71,78 @@ async function channelCommand(sock, chatId, message, args) {
                     video: Buffer.concat(buffer),
                     caption: messageText,
                     mimetype: quotedMessage.videoMessage.mimetype,
-                    contextInfo: channelMessage.contextInfo
+                    contextInfo: {
+                        forwardingScore: 1,
+                        isForwarded: false,
+                        forwardedNewsletterMessageInfo: {
+                            newsletterJid: channelJid,
+                            newsletterName: 'Tech Zone',
+                            serverMessageId: -1
+                        }
+                    }
+                };
+            } else if (quotedMessage.audioMessage) {
+                // Forward audio
+                const stream = await downloadContentFromMessage(quotedMessage.audioMessage, 'audio');
+                const buffer = [];
+                for await (const chunk of stream) {
+                    buffer.push(chunk);
+                }
+                finalMessage = {
+                    audio: Buffer.concat(buffer),
+                    mimetype: quotedMessage.audioMessage.mimetype,
+                    ptt: quotedMessage.audioMessage.ptt || false,
+                    contextInfo: {
+                        forwardingScore: 1,
+                        isForwarded: false,
+                        forwardedNewsletterMessageInfo: {
+                            newsletterJid: channelJid,
+                            newsletterName: 'Tech Zone',
+                            serverMessageId: -1
+                        }
+                    }
+                };
+            } else if (quotedMessage.documentMessage) {
+                // Forward document
+                const stream = await downloadContentFromMessage(quotedMessage.documentMessage, 'document');
+                const buffer = [];
+                for await (const chunk of stream) {
+                    buffer.push(chunk);
+                }
+                finalMessage = {
+                    document: Buffer.concat(buffer),
+                    mimetype: quotedMessage.documentMessage.mimetype,
+                    fileName: quotedMessage.documentMessage.fileName || 'document',
+                    caption: messageText,
+                    contextInfo: {
+                        forwardingScore: 1,
+                        isForwarded: false,
+                        forwardedNewsletterMessageInfo: {
+                            newsletterJid: channelJid,
+                            newsletterName: 'Tech Zone',
+                            serverMessageId: -1
+                        }
+                    }
+                };
+            } else if (quotedMessage.stickerMessage) {
+                // Forward sticker
+                const stream = await downloadContentFromMessage(quotedMessage.stickerMessage, 'sticker');
+                const buffer = [];
+                for await (const chunk of stream) {
+                    buffer.push(chunk);
+                }
+                finalMessage = {
+                    sticker: Buffer.concat(buffer),
+                    mimetype: quotedMessage.stickerMessage.mimetype,
+                    contextInfo: {
+                        forwardingScore: 1,
+                        isForwarded: false,
+                        forwardedNewsletterMessageInfo: {
+                            newsletterJid: channelJid,
+                            newsletterName: 'Tech Zone',
+                            serverMessageId: -1
+                        }
+                    }
                 };
             }
         }
@@ -81,7 +152,7 @@ async function channelCommand(sock, chatId, message, args) {
 
         // Confirm to the user
         await sock.sendMessage(chatId, { 
-            text: `✅ Message sent to channel successfully!\n\n📝 Message: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}\n\n📢 Channel: KnightBot Updates` 
+            text: `✅ Message sent to channel successfully!\n\n📝 Message: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}\n\n📢 Channel: Tech Zone` 
         });
 
         // Log the action
