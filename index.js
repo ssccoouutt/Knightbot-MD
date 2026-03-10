@@ -124,36 +124,54 @@ async function startXeonBotInc() {
 
     store.bind(XeonBotInc.ev)
 
-    // Message handling
-    XeonBotInc.ev.on('messages.upsert', async chatUpdate => {
+    // ===== UPDATED MESSAGE HANDLER FOR BAILEYS 6.6.0 =====
+    XeonBotInc.ev.on('messages.upsert', async ({ messages, type }) => {
         try {
-            const mek = chatUpdate.messages[0]
-            if (!mek.message) return
-            mek.message = (Object.keys(mek.message)[0] === 'ephemeralMessage') ? mek.message.ephemeralMessage.message : mek.message
-            if (mek.key && mek.key.remoteJid === 'status@broadcast') {
+            if (type !== 'notify') return;
+            
+            const mek = messages[0];
+            if (!mek?.message) return;
+            
+            // Handle ephemeral messages
+            if (mek.message.ephemeralMessage) {
+                mek.message = mek.message.ephemeralMessage.message;
+            }
+            
+            // Handle status broadcasts
+            if (mek.key?.remoteJid === 'status@broadcast') {
+                const chatUpdate = { messages: [mek], type };
                 await handleStatus(XeonBotInc, chatUpdate);
                 return;
             }
-            // In private mode, only block non-group messages (allow groups for moderation)
-            // Note: XeonBotInc.public is not synced, so we check mode in main.js instead
-            // This check is kept for backward compatibility but mainly blocks DMs
-            if (!XeonBotInc.public && !mek.key.fromMe && chatUpdate.type === 'notify') {
-                const isGroup = mek.key?.remoteJid?.endsWith('@g.us')
-                if (!isGroup) return // Block DMs in private mode, but allow group messages
-            }
-            if (mek.key.id.startsWith('BAE5') && mek.key.id.length === 16) return
+            
+            // Skip if from self
+            if (mek.key?.fromMe) return;
+            
+            // Skip protocol messages
+            if (mek.key?.id?.startsWith('BAE5') && mek.key.id.length === 16) return;
 
-            // Clear message retry cache to prevent memory bloat
-            if (XeonBotInc?.msgRetryCounterCache) {
-                XeonBotInc.msgRetryCounterCache.clear()
+            // Check private mode
+            if (!XeonBotInc.public && !mek.key.fromMe && type === 'notify') {
+                const isGroup = mek.key?.remoteJid?.endsWith('@g.us');
+                if (!isGroup) return;
             }
+
+            // Clear cache
+            if (XeonBotInc?.msgRetryCounterCache) {
+                XeonBotInc.msgRetryCounterCache.clear();
+            }
+
+            // Create chatUpdate in the format your main.js expects
+            const chatUpdate = {
+                messages: [mek],
+                type: type
+            };
 
             try {
-                await handleMessages(XeonBotInc, chatUpdate, true)
+                await handleMessages(XeonBotInc, chatUpdate, true);
             } catch (err) {
-                console.error("Error in handleMessages:", err)
-                // Only try to send error message if we have a valid chatId
-                if (mek.key && mek.key.remoteJid) {
+                console.error("Error in handleMessages:", err);
+                if (mek.key?.remoteJid) {
                     await XeonBotInc.sendMessage(mek.key.remoteJid, {
                         text: '❌ An error occurred while processing your message.',
                         contextInfo: {
@@ -169,9 +187,9 @@ async function startXeonBotInc() {
                 }
             }
         } catch (err) {
-            console.error("Error in messages.upsert:", err)
+            console.error("Error in messages.upsert:", err);
         }
-    })
+    });
 
     // Add these event handlers for better functionality
     XeonBotInc.decodeJid = (jid) => {
@@ -357,12 +375,7 @@ async function startXeonBotInc() {
         await handleGroupParticipantUpdate(XeonBotInc, update);
     });
 
-    XeonBotInc.ev.on('messages.upsert', async (m) => {
-        if (m.messages[0].key && m.messages[0].key.remoteJid === 'status@broadcast') {
-            await handleStatus(XeonBotInc, m);
-        }
-    });
-
+    // Status update handlers
     XeonBotInc.ev.on('status.update', async (status) => {
         await handleStatus(XeonBotInc, status);
     });
