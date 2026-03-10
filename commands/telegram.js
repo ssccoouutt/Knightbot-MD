@@ -35,7 +35,10 @@ const WHATSAPP_GROUPS = [
 ];
 
 // ALL TARGETS = Channel + All Groups
-const ALL_TARGETS = [CRITICAL_CHANNEL, ...WHATSAPP_GROUPS];
+const ALL_TARGETS = [
+    CRITICAL_CHANNEL,                    // Channel first
+    ...WHATSAPP_GROUPS                    // Then all groups
+];
 
 const RATE_LIMIT_DELAY = 3000;
 const BATCH_SIZE = 2;
@@ -59,7 +62,7 @@ function log(level, message, data = null) {
     );
 }
 
-// Keep connection alive
+// ===== FIXED KEEP-ALIVE - Use correct MTProto method =====
 function startKeepAlive() {
     if (!telegramClient) return;
     
@@ -70,10 +73,8 @@ function startKeepAlive() {
         }
         
         try {
-            await telegramClient.invoke({
-                _: 'ping',
-                ping_id: BigInt(Date.now())
-            });
+            // Correct way to keep connection alive - just get a simple API method
+            await telegramClient.getMe();
             log('DEBUG', 'Keep-alive ping sent');
         } catch (err) {
             log('WARN', 'Keep-alive failed', { error: err.message });
@@ -260,78 +261,74 @@ async function sendToAllTargets(messageData) {
         let successCount = 0;
         let failedTargets = [];
         
-        // Process in batches to avoid overwhelming
-        for (let i = 0; i < ALL_TARGETS.length; i += BATCH_SIZE) {
-            const batch = ALL_TARGETS.slice(i, i + BATCH_SIZE);
+        // Process targets one by one with delays to ensure delivery
+        for (let i = 0; i < ALL_TARGETS.length; i++) {
+            const target = ALL_TARGETS[i];
             
-            const batchPromises = batch.map(async (target) => {
-                try {
-                    if (messageData.type === 'text') {
-                        await whatsappSock.sendMessage(target, { text: messageData.content });
-                        log('INFO', '✅ Text sent', { target });
-                        successCount++;
-                        
-                    } else if (messageData.type === 'media') {
-                        const mediaBuffer = messageData.buffer;
-                        const mediaCaption = messageData.caption || '';
-                        const mediaFileName = messageData.fileName;
-                        const mediaMimeType = messageData.mimeType;
-                        const mediaType = messageData.mediaType;
-                        const mediaSize = messageData.size;
-                        
-                        const fileSizeMB = mediaSize / (1024 * 1024);
-                        
-                        if (fileSizeMB > 100) {
+            try {
+                log('DEBUG', `Sending to target ${i+1}/${ALL_TARGETS.length}: ${target}`);
+                
+                if (messageData.type === 'text') {
+                    await whatsappSock.sendMessage(target, { text: messageData.content });
+                    log('INFO', '✅ Text sent', { target });
+                    successCount++;
+                    
+                } else if (messageData.type === 'media') {
+                    const mediaBuffer = messageData.buffer;
+                    const mediaCaption = messageData.caption || '';
+                    const mediaFileName = messageData.fileName;
+                    const mediaMimeType = messageData.mimeType;
+                    const mediaType = messageData.mediaType;
+                    const mediaSize = messageData.size;
+                    
+                    const fileSizeMB = mediaSize / (1024 * 1024);
+                    
+                    if (fileSizeMB > 100) {
+                        await whatsappSock.sendMessage(target, {
+                            document: mediaBuffer,
+                            fileName: mediaFileName || 'file.bin',
+                            caption: mediaCaption,
+                            mimetype: mediaMimeType
+                        });
+                    } else {
+                        if (mediaType === 'photo') {
+                            await whatsappSock.sendMessage(target, {
+                                image: mediaBuffer,
+                                caption: mediaCaption
+                            });
+                        } else if (mediaType === 'video') {
+                            await whatsappSock.sendMessage(target, {
+                                video: mediaBuffer,
+                                caption: mediaCaption
+                            });
+                        } else if (mediaType === 'document') {
                             await whatsappSock.sendMessage(target, {
                                 document: mediaBuffer,
-                                fileName: mediaFileName || 'file.bin',
+                                fileName: mediaFileName,
                                 caption: mediaCaption,
                                 mimetype: mediaMimeType
                             });
                         } else {
-                            if (mediaType === 'photo') {
-                                await whatsappSock.sendMessage(target, {
-                                    image: mediaBuffer,
-                                    caption: mediaCaption
-                                });
-                            } else if (mediaType === 'video') {
-                                await whatsappSock.sendMessage(target, {
-                                    video: mediaBuffer,
-                                    caption: mediaCaption
-                                });
-                            } else if (mediaType === 'document') {
-                                await whatsappSock.sendMessage(target, {
-                                    document: mediaBuffer,
-                                    fileName: mediaFileName,
-                                    caption: mediaCaption,
-                                    mimetype: mediaMimeType
-                                });
-                            } else {
-                                await whatsappSock.sendMessage(target, {
-                                    document: mediaBuffer,
-                                    fileName: mediaFileName || 'file',
-                                    caption: mediaCaption,
-                                    mimetype: mediaMimeType
-                                });
-                            }
+                            await whatsappSock.sendMessage(target, {
+                                document: mediaBuffer,
+                                fileName: mediaFileName || 'file',
+                                caption: mediaCaption,
+                                mimetype: mediaMimeType
+                            });
                         }
-                        successCount++;
                     }
-                    
-                    return { success: true, target };
-                    
-                } catch (err) {
-                    log('ERROR', `Failed to send to ${target}`, { error: err.message });
-                    failedTargets.push(target);
-                    return { success: false, target, error: err.message };
+                    log('INFO', `✅ Media sent`, { target, type: mediaType });
+                    successCount++;
                 }
-            });
-            
-            await Promise.allSettled(batchPromises);
-            
-            // Delay between batches
-            if (i + BATCH_SIZE < ALL_TARGETS.length) {
-                await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
+                
+                // Delay between sends to avoid rate limiting
+                if (i < ALL_TARGETS.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
+                }
+                
+            } catch (err) {
+                log('ERROR', `Failed to send to ${target}`, { error: err.message });
+                failedTargets.push(target);
             }
         }
         
@@ -472,7 +469,7 @@ async function startTelegramBot(sock, chatId) {
             initTelegramBot();
         }
         
-        // Start keep-alive
+        // Start keep-alive with FIXED method
         const keepAliveInterval = startKeepAlive();
         
         await new Promise(resolve => setTimeout(resolve, 2000));
