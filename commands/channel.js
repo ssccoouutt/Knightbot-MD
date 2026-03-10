@@ -4,25 +4,52 @@ async function channelCommand(sock, chatId, message, args) {
     try {
         const channelJid = '120363405181626845@newsletter';
         
-        // Get message content and caption
-        const messageText = args.join(' ').trim();
+        // Get the full message object
+        const fullMessage = message.message;
         
-        // Check if there's any media in the message
-        // The message object structure is different for media messages
-        const mediaTypes = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'];
-        let hasMedia = false;
+        // Check if this is a media message with caption
+        let mediaData = null;
         let mediaType = null;
+        let caption = '';
         
-        for (const type of mediaTypes) {
-            if (message.message?.[type]) {
-                hasMedia = true;
-                mediaType = type;
-                break;
-            }
+        // Check for image with caption
+        if (fullMessage?.imageMessage) {
+            mediaData = fullMessage.imageMessage;
+            mediaType = 'image';
+            caption = mediaData.caption || '';
+        }
+        // Check for video with caption
+        else if (fullMessage?.videoMessage) {
+            mediaData = fullMessage.videoMessage;
+            mediaType = 'video';
+            caption = mediaData.caption || '';
+        }
+        // Check for audio
+        else if (fullMessage?.audioMessage) {
+            mediaData = fullMessage.audioMessage;
+            mediaType = 'audio';
+        }
+        // Check for document
+        else if (fullMessage?.documentMessage) {
+            mediaData = fullMessage.documentMessage;
+            mediaType = 'document';
+            caption = mediaData.caption || '';
+        }
+        // Check for sticker
+        else if (fullMessage?.stickerMessage) {
+            mediaData = fullMessage.stickerMessage;
+            mediaType = 'sticker';
         }
         
-        // If no message text and no media, show usage
-        if (!messageText && !hasMedia) {
+        // Get the command arguments (if any)
+        const messageText = args.join(' ').trim();
+        
+        // If it's a media message, the caption might contain the command
+        // So we need to use the messageText from args if available, otherwise use the media caption
+        const finalCaption = messageText || caption || '';
+        
+        // If no media and no text, show usage
+        if (!mediaData && !messageText) {
             await sock.sendMessage(chatId, { 
                 text: '❌ Please provide a message or media to send to the channel!\n\nUsage:\n• Text: `.channel Hello everyone!`\n• Media: Send image/video with caption `.channel Your caption here`' 
             });
@@ -35,19 +62,20 @@ async function channelCommand(sock, chatId, message, args) {
         let finalMessage = {};
         const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
         
-        // Check if message contains media directly
-        if (hasMedia) {
-            if (mediaType === 'imageMessage') {
-                // Handle image
-                const mediaData = message.message.imageMessage;
-                const stream = await downloadContentFromMessage(mediaData, 'image');
-                const buffer = [];
-                for await (const chunk of stream) {
-                    buffer.push(chunk);
-                }
+        // If there's media in the message
+        if (mediaData) {
+            // Download the media
+            const stream = await downloadContentFromMessage(mediaData, mediaType);
+            const buffer = [];
+            for await (const chunk of stream) {
+                buffer.push(chunk);
+            }
+            
+            // Prepare message based on media type
+            if (mediaType === 'image') {
                 finalMessage = {
                     image: Buffer.concat(buffer),
-                    caption: messageText || '',
+                    caption: finalCaption,
                     mimetype: mediaData.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -59,17 +87,10 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
-            } else if (mediaType === 'videoMessage') {
-                // Handle video
-                const mediaData = message.message.videoMessage;
-                const stream = await downloadContentFromMessage(mediaData, 'video');
-                const buffer = [];
-                for await (const chunk of stream) {
-                    buffer.push(chunk);
-                }
+            } else if (mediaType === 'video') {
                 finalMessage = {
                     video: Buffer.concat(buffer),
-                    caption: messageText || '',
+                    caption: finalCaption,
                     mimetype: mediaData.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -81,14 +102,7 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
-            } else if (mediaType === 'audioMessage') {
-                // Handle audio
-                const mediaData = message.message.audioMessage;
-                const stream = await downloadContentFromMessage(mediaData, 'audio');
-                const buffer = [];
-                for await (const chunk of stream) {
-                    buffer.push(chunk);
-                }
+            } else if (mediaType === 'audio') {
                 finalMessage = {
                     audio: Buffer.concat(buffer),
                     mimetype: mediaData.mimetype,
@@ -103,19 +117,12 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
-            } else if (mediaType === 'documentMessage') {
-                // Handle document
-                const mediaData = message.message.documentMessage;
-                const stream = await downloadContentFromMessage(mediaData, 'document');
-                const buffer = [];
-                for await (const chunk of stream) {
-                    buffer.push(chunk);
-                }
+            } else if (mediaType === 'document') {
                 finalMessage = {
                     document: Buffer.concat(buffer),
                     mimetype: mediaData.mimetype,
                     fileName: mediaData.fileName || 'document',
-                    caption: messageText || '',
+                    caption: finalCaption,
                     contextInfo: {
                         forwardingScore: 1,
                         isForwarded: false,
@@ -126,14 +133,7 @@ async function channelCommand(sock, chatId, message, args) {
                         }
                     }
                 };
-            } else if (mediaType === 'stickerMessage') {
-                // Handle sticker
-                const mediaData = message.message.stickerMessage;
-                const stream = await downloadContentFromMessage(mediaData, 'sticker');
-                const buffer = [];
-                for await (const chunk of stream) {
-                    buffer.push(chunk);
-                }
+            } else if (mediaType === 'sticker') {
                 finalMessage = {
                     sticker: Buffer.concat(buffer),
                     mimetype: mediaData.mimetype,
@@ -148,10 +148,10 @@ async function channelCommand(sock, chatId, message, args) {
                     }
                 };
             }
-        } 
-        // Check if this is a reply to a message (to forward quoted media)
-        else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
-            const quotedMessage = message.message.extendedTextMessage.contextInfo.quotedMessage;
+        }
+        // Check if this is a reply to a message
+        else if (fullMessage?.extendedTextMessage?.contextInfo?.quotedMessage) {
+            const quotedMessage = fullMessage.extendedTextMessage.contextInfo.quotedMessage;
             
             if (quotedMessage.imageMessage) {
                 // Forward image
@@ -162,7 +162,7 @@ async function channelCommand(sock, chatId, message, args) {
                 }
                 finalMessage = {
                     image: Buffer.concat(buffer),
-                    caption: messageText || '',
+                    caption: messageText,
                     mimetype: quotedMessage.imageMessage.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -183,7 +183,7 @@ async function channelCommand(sock, chatId, message, args) {
                 }
                 finalMessage = {
                     video: Buffer.concat(buffer),
-                    caption: messageText || '',
+                    caption: messageText,
                     mimetype: quotedMessage.videoMessage.mimetype,
                     contextInfo: {
                         forwardingScore: 1,
@@ -227,7 +227,7 @@ async function channelCommand(sock, chatId, message, args) {
                     document: Buffer.concat(buffer),
                     mimetype: quotedMessage.documentMessage.mimetype,
                     fileName: quotedMessage.documentMessage.fileName || 'document',
-                    caption: messageText || '',
+                    caption: messageText,
                     contextInfo: {
                         forwardingScore: 1,
                         isForwarded: false,
@@ -290,18 +290,16 @@ async function channelCommand(sock, chatId, message, args) {
         }
 
         // Send to channel
-        await sock.sendMessage(channelJid, finalMessage);
+        if (Object.keys(finalMessage).length > 0) {
+            await sock.sendMessage(channelJid, finalMessage);
+        }
 
         // Determine what was sent for confirmation message
         let sentType = 'text message';
-        if (hasMedia) {
-            if (mediaType === 'imageMessage') sentType = 'image';
-            else if (mediaType === 'videoMessage') sentType = 'video';
-            else if (mediaType === 'audioMessage') sentType = 'audio';
-            else if (mediaType === 'documentMessage') sentType = 'document';
-            else if (mediaType === 'stickerMessage') sentType = 'sticker';
-        } else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
-            const quoted = message.message.extendedTextMessage.contextInfo.quotedMessage;
+        if (mediaData) {
+            sentType = mediaType;
+        } else if (fullMessage?.extendedTextMessage?.contextInfo?.quotedMessage) {
+            const quoted = fullMessage.extendedTextMessage.contextInfo.quotedMessage;
             if (quoted.imageMessage) sentType = 'image (forwarded)';
             else if (quoted.videoMessage) sentType = 'video (forwarded)';
             else if (quoted.audioMessage) sentType = 'audio (forwarded)';
@@ -312,11 +310,11 @@ async function channelCommand(sock, chatId, message, args) {
 
         // Confirm to the user
         await sock.sendMessage(chatId, { 
-            text: `✅ ${sentType.charAt(0).toUpperCase() + sentType.slice(1)} sent to channel successfully!\n\n${messageText ? `📝 Caption: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}\n\n` : ''}📢 Channel: Tech Zone` 
+            text: `✅ ${sentType.charAt(0).toUpperCase() + sentType.slice(1)} sent to channel successfully!\n\n${finalCaption ? `📝 Caption: ${finalCaption.substring(0, 50)}${finalCaption.length > 50 ? '...' : ''}\n\n` : ''}📢 Channel: Tech Zone` 
         });
 
         // Log the action
-        console.log(`📢 Channel ${sentType} sent by ${chatId}: ${messageText.substring(0, 50)}...`);
+        console.log(`📢 Channel ${sentType} sent by ${chatId}: ${finalCaption.substring(0, 50)}...`);
 
     } catch (error) {
         console.error('Channel command error:', error);
