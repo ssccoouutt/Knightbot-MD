@@ -1,11 +1,12 @@
 /**
- * Knight Bot - COMPLETE STANDALONE VERSION
- * No dependencies on main.js - everything works here
+ * Knight Bot - CLEAN VERSION with basic commands
+ * No main.js needed - everything works here
  */
 const { Boom } = require('@hapi/boom')
 const fs = require('fs')
 const chalk = require('chalk')
 const path = require('path')
+const axios = require('axios')
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -22,20 +23,15 @@ const { rmSync } = require('fs')
 // Settings
 const phoneNumber = "923247220362"
 const owner = ["923247220362"]
+const sessionDir = "./session"
 
 global.botname = "KNIGHT BOT"
 global.themeemoji = "•"
-const pairingCode = true // Use pairing code instead of QR
+const pairingCode = true
 
-// Readline for pairing code
-const rl = process.stdin.isTTY ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null
-const question = (text) => {
-    if (rl) {
-        return new Promise((resolve) => rl.question(text, resolve))
-    } else {
-        return Promise.resolve(phoneNumber)
-    }
-}
+// Create temp directory for downloads
+const TEMP_DIR = path.join(process.cwd(), 'temp');
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 // Channel ID
 const CHANNEL_ID = "120363405181626845@newsletter";
@@ -47,21 +43,39 @@ function log(level, msg, data) {
     if (data) console.log(JSON.stringify(data, null, 2));
 }
 
+// Readline for pairing code
+const rl = process.stdin.isTTY ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null
+const question = (text) => {
+    if (rl) {
+        return new Promise((resolve) => rl.question(text, resolve))
+    } else {
+        return Promise.resolve(phoneNumber)
+    }
+}
+
+// Format size
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
 async function startBot() {
     try {
-        console.log(chalk.cyan('🔧 Starting STANDALONE bot with Baileys version:', require('@whiskeysockets/baileys/package.json').version));
+        console.log(chalk.cyan('🔧 Starting Knight Bot with Baileys version:', require('@whiskeysockets/baileys/package.json').version));
         console.log(chalk.yellow(`📱 Your number: ${phoneNumber}`));
         console.log(chalk.yellow(`📢 Channel ID: ${CHANNEL_ID}`));
         
-        const { state, saveCreds } = await useMultiFileAuthState("./session");
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         const { version } = await fetchLatestBaileysVersion();
 
         const sock = makeWASocket({
             version,
             logger: pino({ level: "silent" }),
-            printQRInTerminal: false, // Use pairing code
+            printQRInTerminal: false,
             auth: state,
-            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            browser: ["KnightBot", "Chrome", "3.0.7"],
         });
 
         // Handle connection updates
@@ -77,13 +91,18 @@ async function startBot() {
             }
             
             if (connection === "open") {
-                console.log(chalk.green('✅ Bot Connected Successfully!'));
-                console.log(chalk.blue(`Bot is ready!`));
+                console.log(chalk.green('\n✅ Bot Connected Successfully!'));
+                console.log(chalk.blue(`Bot Version: 3.0.7`));
+                console.log(chalk.magenta(`\n${global.themeemoji || '•'} YT CHANNEL: MR UNIQUE HACKER`));
+                console.log(chalk.magenta(`${global.themeemoji || '•'} GITHUB: mrunqiuehacker`));
+                console.log(chalk.magenta(`${global.themeemoji || '•'} WA NUMBER: ${owner}`));
+                console.log(chalk.magenta(`${global.themeemoji || '•'} CREDIT: MR UNIQUE HACKER`));
+                console.log(chalk.green(`${global.themeemoji || '•'} 🤖 Bot Ready! ✅\n`));
                 
-                // Send connection message to yourself
+                // Send connection message
                 try {
                     await sock.sendMessage(`${phoneNumber}@s.whatsapp.net`, { 
-                        text: '✅ Bot is online and ready!' 
+                        text: '✅ Bot is online! Send .menu for commands' 
                     });
                 } catch (e) {}
             }
@@ -97,7 +116,7 @@ async function startBot() {
                     startBot();
                 } else {
                     try {
-                        rmSync('./session', { recursive: true, force: true });
+                        rmSync(sessionDir, { recursive: true, force: true });
                         console.log(chalk.yellow('Session deleted. Please restart.'));
                     } catch (e) {}
                 }
@@ -118,7 +137,7 @@ async function startBot() {
                     console.log(chalk.yellow('1. Open WhatsApp on your phone'));
                     console.log(chalk.yellow('2. Go to Settings > Linked Devices'));
                     console.log(chalk.yellow('3. Tap "Link a Device"'));
-                    console.log(chalk.yellow(`4. Enter this code: ${code}`));
+                    console.log(chalk.yellow(`4. Enter this code: ${code}\n`));
                 } catch (error) {
                     console.error('Pairing code error:', error);
                 }
@@ -138,65 +157,204 @@ async function startBot() {
                 if (msg.key?.fromMe) return;
                 
                 const from = msg.key.remoteJid;
+                const isGroup = from.endsWith('@g.us');
+                const sender = isGroup ? msg.key.participant : from;
                 
                 // Get message text
                 let text = '';
+                let rawText = '';
+                
                 if (msg.message?.conversation) {
                     text = msg.message.conversation;
+                    rawText = text;
                 } else if (msg.message?.extendedTextMessage?.text) {
                     text = msg.message.extendedTextMessage.text;
+                    rawText = text;
                 } else if (msg.message?.imageMessage?.caption) {
                     text = msg.message.imageMessage.caption;
+                    rawText = text;
                 } else if (msg.message?.videoMessage?.caption) {
                     text = msg.message.videoMessage.caption;
+                    rawText = text;
                 }
                 
                 if (!text) return;
                 
-                log('INFO', `📨 Message from ${from}: ${text}`);
+                const userMessage = text.toLowerCase().trim();
+                log('INFO', `📨 ${isGroup ? 'Group' : 'Private'} message from ${sender}: ${userMessage}`);
+
+                // ===== BASIC COMMANDS =====
                 
-                // ===== PING COMMAND =====
-                if (text === '.ping') {
+                // .ping command
+                if (userMessage === '.ping') {
+                    const start = Date.now();
                     await sock.sendMessage(from, { text: 'pong 🏓' });
+                    const end = Date.now();
+                    await sock.sendMessage(from, { text: `⏱️ Response time: ${end - start}ms` });
                     log('INFO', '✅ Responded to .ping');
                 }
                 
-                // ===== CHANNEL COMMAND =====
-                else if (text.startsWith('.channel')) {
-                    const args = text.slice(8).trim();
+                // .menu / .help command
+                else if (userMessage === '.menu' || userMessage === '.help' || userMessage === '.commands') {
+                    const menuText = `╔══════════════════╗
+   *🤖 KNIGHT BOT*  
+   Version: *3.0.7*
+   by MR UNIQUE HACKER
+╚══════════════════╝
+
+*Available Commands:*
+
+╔══════════════════╗
+🌐 *General Commands*:
+║ ➤ .ping
+║ ➤ .menu
+║ ➤ .owner
+║ ➤ .repo
+║ ➤ .alive
+╚══════════════════╝
+
+╔══════════════════╗
+📢 *Channel Commands*:
+║ ➤ .channel <text>
+║ ➤ Reply to image/video with .channel
+╚══════════════════╝
+
+╔══════════════════╗
+🎮 *Fun Commands*:
+║ ➤ .sticker (reply to image)
+║ ➤ .tts <text>
+║ ➤ .joke
+║ ➤ .quote
+╚══════════════════╝
+
+╔══════════════════╗
+📥 *Downloader*:
+║ ➤ .yt <url>
+║ ➤ .ig <url>
+║ ➤ .fb <url>
+╚══════════════════╝
+
+Join our channel for updates:`;
                     
-                    // Check if replying to media
+                    await sock.sendMessage(from, { text: menuText });
+                    log('INFO', '✅ Sent menu');
+                }
+                
+                // .owner command
+                else if (userMessage === '.owner') {
+                    await sock.sendMessage(from, { text: `👑 *Owner:* ${owner[0]}\n📱 WhatsApp: wa.me/${owner[0]}` });
+                }
+                
+                // .repo / .git command
+                else if (userMessage === '.repo' || userMessage === '.git' || userMessage === '.github' || userMessage === '.script') {
+                    await sock.sendMessage(from, { text: '📦 *Knight Bot Repository*\n\nhttps://github.com/ssccoouutt/Knightbot-MD' });
+                }
+                
+                // .alive command
+                else if (userMessage === '.alive') {
+                    await sock.sendMessage(from, { text: '🤖 *I am alive!*\n\nUptime: ' + process.uptime().toFixed(0) + ' seconds' });
+                }
+                
+                // .sticker command
+                else if (userMessage === '.sticker' || userMessage === '.s') {
                     const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
                     
                     if (quotedMsg?.imageMessage) {
-                        log('INFO', '📸 Processing quoted image');
-                        
                         try {
-                            // Download the image
                             const stream = await downloadContentFromMessage(quotedMsg.imageMessage, 'image');
                             const buffer = [];
                             for await (const chunk of stream) buffer.push(chunk);
                             const imageBuffer = Buffer.concat(buffer);
                             
-                            log('INFO', `Image downloaded: ${imageBuffer.length} bytes`);
+                            await sock.sendMessage(from, {
+                                sticker: imageBuffer
+                            });
                             
-                            // Send to channel
+                            log('INFO', '✅ Sticker created');
+                        } catch (err) {
+                            log('ERROR', 'Sticker creation failed', err);
+                            await sock.sendMessage(from, { text: '❌ Failed to create sticker' });
+                        }
+                    } else {
+                        await sock.sendMessage(from, { text: '❌ Reply to an image with .sticker' });
+                    }
+                }
+                
+                // .tts command (Text to Speech)
+                else if (userMessage.startsWith('.tts ')) {
+                    const ttsText = rawText.slice(5).trim();
+                    if (ttsText) {
+                        try {
+                            const response = await axios.get(`https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(ttsText)}&tl=en&client=tw-ob`, {
+                                responseType: 'arraybuffer'
+                            });
+                            
+                            await sock.sendMessage(from, {
+                                audio: Buffer.from(response.data),
+                                mimetype: 'audio/mpeg',
+                                ptt: true
+                            });
+                            
+                            log('INFO', '✅ TTS sent');
+                        } catch (err) {
+                            log('ERROR', 'TTS failed', err);
+                            await sock.sendMessage(from, { text: '❌ TTS failed' });
+                        }
+                    } else {
+                        await sock.sendMessage(from, { text: '❌ Usage: .tts Hello world' });
+                    }
+                }
+                
+                // .joke command
+                else if (userMessage === '.joke') {
+                    try {
+                        const response = await axios.get('https://v2.jokeapi.dev/joke/Any?type=single');
+                        const joke = response.data.joke || 'No joke found';
+                        await sock.sendMessage(from, { text: `😄 *Joke:*\n\n${joke}` });
+                    } catch (err) {
+                        await sock.sendMessage(from, { text: 'Why did the programmer quit his job?\nBecause he didn\'t get arrays!' });
+                    }
+                }
+                
+                // .quote command
+                else if (userMessage === '.quote') {
+                    const quotes = [
+                        "The only way to do great work is to love what you do. - Steve Jobs",
+                        "Life is what happens when you're busy making other plans. - John Lennon",
+                        "The future belongs to those who believe in the beauty of their dreams. - Eleanor Roosevelt",
+                        "It does not matter how slowly you go as long as you do not stop. - Confucius",
+                        "Everything you've ever wanted is on the other side of fear. - George Addair"
+                    ];
+                    const randomQuote = quotes[Math.floor(Math.random() * quotes.length)];
+                    await sock.sendMessage(from, { text: `💭 *Quote:*\n\n${randomQuote}` });
+                }
+                
+                // .channel command
+                else if (userMessage.startsWith('.channel')) {
+                    const args = rawText.slice(8).trim();
+                    const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+                    
+                    if (quotedMsg?.imageMessage) {
+                        try {
+                            const stream = await downloadContentFromMessage(quotedMsg.imageMessage, 'image');
+                            const buffer = [];
+                            for await (const chunk of stream) buffer.push(chunk);
+                            const imageBuffer = Buffer.concat(buffer);
+                            
+                            log('INFO', `Image downloaded: ${formatFileSize(imageBuffer.length)}`);
+                            
                             await sock.sendMessage(CHANNEL_ID, {
                                 image: imageBuffer,
-                                caption: args || 'Sent via bot'
+                                caption: args || 'Sent via KnightBot'
                             });
                             
                             await sock.sendMessage(from, { text: '✅ Image sent to channel!' });
-                            log('INFO', '✅ Image sent to channel');
-                            
                         } catch (err) {
-                            log('ERROR', 'Failed to process image', err);
+                            log('ERROR', 'Channel image failed', err);
                             await sock.sendMessage(from, { text: '❌ Failed: ' + err.message });
                         }
                     }
                     else if (quotedMsg?.videoMessage) {
-                        log('INFO', '🎥 Processing quoted video');
-                        
                         try {
                             const stream = await downloadContentFromMessage(quotedMsg.videoMessage, 'video');
                             const buffer = [];
@@ -205,43 +363,47 @@ async function startBot() {
                             
                             await sock.sendMessage(CHANNEL_ID, {
                                 video: videoBuffer,
-                                caption: args || 'Sent via bot'
+                                caption: args || 'Sent via KnightBot'
                             });
                             
                             await sock.sendMessage(from, { text: '✅ Video sent to channel!' });
-                            log('INFO', '✅ Video sent to channel');
-                            
                         } catch (err) {
-                            log('ERROR', 'Failed to process video', err);
                             await sock.sendMessage(from, { text: '❌ Failed: ' + err.message });
                         }
                     }
                     else if (args) {
-                        // Text only
-                        log('INFO', '📝 Sending text to channel', { text: args });
-                        
                         await sock.sendMessage(CHANNEL_ID, { text: args });
                         await sock.sendMessage(from, { text: '✅ Text sent to channel!' });
-                        log('INFO', '✅ Text sent to channel');
                     }
                     else {
-                        await sock.sendMessage(from, { text: '❌ Usage: .channel your message or reply to media' });
+                        await sock.sendMessage(from, { text: '❌ Usage: .channel text or reply to image/video' });
                     }
                 }
                 
-                // ===== TEST COMMAND =====
-                else if (text === '.test') {
-                    await sock.sendMessage(from, { text: '✅ Bot is working!' });
+                // .yt command (YouTube downloader placeholder)
+                else if (userMessage.startsWith('.yt ')) {
+                    const url = rawText.slice(4).trim();
+                    await sock.sendMessage(from, { text: `⏳ Downloading from YouTube: ${url}\n\nThis feature is being implemented.` });
                 }
                 
-                // ===== HELP COMMAND =====
-                else if (text === '.help') {
-                    const helpMsg = `*Available Commands:*\n\n• .ping - Test bot\n• .channel text - Send text to channel\n• Reply to image with .channel - Send image to channel\n• .test - Check if bot works`;
-                    await sock.sendMessage(from, { text: helpMsg });
+                // .ig command (Instagram downloader placeholder)
+                else if (userMessage.startsWith('.ig ') || userMessage.startsWith('.insta ')) {
+                    const url = rawText.slice(userMessage.startsWith('.ig ') ? 4 : 7).trim();
+                    await sock.sendMessage(from, { text: `⏳ Downloading from Instagram: ${url}\n\nThis feature is being implemented.` });
+                }
+                
+                // Default response for unrecognized commands
+                else if (userMessage.startsWith('.')) {
+                    await sock.sendMessage(from, { text: `❌ Unknown command: ${userMessage}\nType .menu for available commands` });
                 }
                 
             } catch (err) {
                 log('ERROR', '❌ Error in message handler', err);
+                if (msg?.key?.remoteJid) {
+                    await sock.sendMessage(msg.key.remoteJid, { 
+                        text: '❌ An error occurred processing your command' 
+                    }).catch(() => {});
+                }
             }
         });
 
