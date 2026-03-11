@@ -1,6 +1,5 @@
 /**
- * ULTRA SIMPLE TEST BOT
- * Nothing else, just pure basic WhatsApp bot
+ * ULTRA DEBUG TEST - Shows EVERY message received
  */
 const {
     default: makeWASocket,
@@ -13,15 +12,12 @@ const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const readline = require("readline");
 
-// Your number
 const PHONE_NUMBER = "923247220362";
-
-// Create readline interface for pairing code
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const question = (text) => new Promise((resolve) => rl.question(text, resolve));
 
 async function startBot() {
-    console.log("🚀 Starting ULTRA SIMPLE TEST BOT...");
+    console.log("🚀 Starting ULTRA DEBUG TEST BOT...");
     console.log(`📱 Your number: ${PHONE_NUMBER}`);
     
     const { state, saveCreds } = await useMultiFileAuthState("session");
@@ -32,32 +28,20 @@ async function startBot() {
         logger: pino({ level: "silent" }),
         printQRInTerminal: false,
         auth: state,
-        browser: ["ULTRA SIMPLE", "TEST", "1.0.0"],
     });
 
-    // Handle connection
+    // Connection handler
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
         
-        if (connection === "connecting") {
-            console.log("🔄 Connecting...");
-        }
-        
         if (connection === "open") {
-            console.log("✅ CONNECTED SUCCESSFULLY!");
-            console.log("📱 Send '.ping' to this number to test");
-            
-            // Send yourself a test message
-            setTimeout(async () => {
-                await sock.sendMessage(`${PHONE_NUMBER}@s.whatsapp.net`, { 
-                    text: "✅ Bot is online! Send .ping" 
-                });
-            }, 2000);
+            console.log("\n✅✅✅ CONNECTED SUCCESSFULLY! ✅✅✅");
+            console.log("📱 Waiting for messages...");
+            console.log("Send ANY message to see if it's detected\n");
         }
         
         if (connection === "close") {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log("Connection closed, reconnecting:", shouldReconnect);
             if (shouldReconnect) startBot();
         }
     });
@@ -66,7 +50,6 @@ async function startBot() {
 
     // Handle pairing code
     if (!sock.authState.creds.registered) {
-        console.log("\n📱 Requesting pairing code...");
         setTimeout(async () => {
             try {
                 let code = await sock.requestPairingCode(PHONE_NUMBER);
@@ -74,42 +57,54 @@ async function startBot() {
                 console.log("\n🔐 ========== PAIRING CODE ==========");
                 console.log(`       ${code}`);
                 console.log("=====================================\n");
-                console.log("1. Open WhatsApp on your phone");
-                console.log("2. Go to Settings > Linked Devices");
-                console.log("3. Tap 'Link a Device'");
-                console.log(`4. Enter this code: ${code}\n`);
             } catch (error) {
                 console.error("Pairing code error:", error);
             }
         }, 3000);
     }
 
-    // ===== SUPER SIMPLE MESSAGE HANDLER =====
-    sock.ev.on("messages.upsert", async (m) => {
-        try {
-            // Get the message
+    // ===== DEBUG ALL EVENTS =====
+    sock.ev.on("messages.upsert", (m) => {
+        console.log("\n📥📥📥 MESSAGE EVENT TRIGGERED! 📥📥📥");
+        console.log("Event type:", m.type);
+        console.log("Has messages:", !!m.messages);
+        console.log("Message count:", m.messages?.length);
+        
+        if (m.messages && m.messages[0]) {
             const msg = m.messages[0];
-            if (!msg?.message || msg.key?.fromMe) return;
+            console.log("\n📨 RAW MESSAGE DATA:");
+            console.log("  From:", msg.key?.remoteJid);
+            console.log("  From Me:", msg.key?.fromMe);
+            console.log("  ID:", msg.key?.id);
+            console.log("  Has Message:", !!msg.message);
             
-            // Get text
-            let text = "";
-            if (msg.message.conversation) text = msg.message.conversation;
-            else if (msg.message.extendedTextMessage?.text) text = msg.message.extendedTextMessage.text;
-            else return;
-            
-            console.log(`📨 Received: "${text}" from ${msg.key.remoteJid}`);
-            
-            // ONLY ONE COMMAND - .ping
-            if (text === ".ping") {
-                await sock.sendMessage(msg.key.remoteJid, { text: "pong" });
-                console.log("✅ Sent: pong");
+            if (msg.message) {
+                console.log("  Message Types:", Object.keys(msg.message));
+                
+                // Try to extract text
+                let text = "";
+                if (msg.message.conversation) text = msg.message.conversation;
+                else if (msg.message.extendedTextMessage?.text) text = msg.message.extendedTextMessage.text;
+                else if (msg.message.imageMessage?.caption) text = msg.message.imageMessage.caption;
+                
+                console.log("  Text:", text || "[no text]");
+                
+                // Respond to ANY message
+                if (text && !msg.key?.fromMe) {
+                    console.log("  ✅ VALID MESSAGE DETECTED!");
+                    sock.sendMessage(msg.key.remoteJid, { 
+                        text: `✅ Received: "${text}"` 
+                    }).catch(console.error);
+                }
             }
-            
-        } catch (err) {
-            console.error("Error:", err);
         }
+        console.log("📥📥📥 END MESSAGE EVENT 📥📥📥\n");
     });
 
+    // Log other events too
+    sock.ev.on("messages.reaction", (r) => console.log("Reaction event:", r));
+    sock.ev.on("presence.update", (p) => console.log("Presence update"));
+    
     return sock;
 }
 
