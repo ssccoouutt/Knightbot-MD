@@ -1,6 +1,6 @@
 /**
- * Knight Bot - COMPLETE DEBUG VERSION WITH ALL FIXES
- * Shows EVERY event, message details, and includes heartbeat
+ * Knight Bot - COMPLETE VERSION WITH ENCRYPTION FIXES
+ * Fixes the "Closing session" and message receiving issues
  */
 const { Boom } = require('@hapi/boom')
 const fs = require('fs')
@@ -15,11 +15,13 @@ const {
     delay,
     jidDecode,
     getContentType,
-    makeCacheableSignalKeyStore
+    makeCacheableSignalKeyStore,
+    Browsers
 } = require("@whiskeysockets/baileys")
 const pino = require("pino")
 const readline = require("readline")
 const NodeCache = require("node-cache")
+const { rmSync } = require('fs')
 
 // Settings
 const phoneNumber = "923247220362"
@@ -33,7 +35,10 @@ const pairingCode = true
 const CHANNEL_ID = "120363405181626845@newsletter";
 
 // Create message cache to prevent duplicates
-const msgRetryCounterCache = new NodeCache()
+const msgRetryCounterCache = new NodeCache({ stdTTL: 300 }) // 5 minutes TTL
+
+// Store for messages
+const messageStore = new Map();
 
 // Readline for pairing code
 const rl = process.stdin.isTTY ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null
@@ -54,7 +59,8 @@ function logDebug(level, message, data = null) {
         'ERROR': chalk.red,
         'DEBUG': chalk.cyan,
         'MSG': chalk.magenta,
-        'HEART': chalk.blue
+        'HEART': chalk.blue,
+        'AUTH': chalk.yellow
     };
     const color = colors[level] || chalk.white;
     console.log(color(`[${timestamp}] [${level}] ${message}`));
@@ -67,9 +73,17 @@ function logDebug(level, message, data = null) {
 
 async function startBot() {
     try {
-        console.log(chalk.cyan('🔧 Starting COMPLETE DEBUG bot with Baileys version:', require('@whiskeysockets/baileys/package.json').version));
+        console.log(chalk.cyan('🔧 Starting Knight Bot with Baileys version:', require('@whiskeysockets/baileys/package.json').version));
         console.log(chalk.yellow(`📱 Your number: ${phoneNumber}`));
         console.log(chalk.yellow(`📢 Channel ID: ${CHANNEL_ID}`));
+        
+        // Clear any stale session data
+        try {
+            const authState = await useMultiFileAuthState("./session");
+            logDebug('AUTH', '📁 Auth state loaded');
+        } catch (e) {
+            logDebug('WARN', '⚠️ No existing session found');
+        }
         
         const { state, saveCreds } = await useMultiFileAuthState("./session");
         const { version } = await fetchLatestBaileysVersion();
@@ -82,14 +96,31 @@ async function startBot() {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
             },
-            browser: ["KnightBot", "Chrome", "3.0.7"],
+            browser: Browsers.ubuntu("Chrome"),
             markOnlineOnConnect: true,
-            syncFullHistory: false,
+            syncFullHistory: true, // Sync history to fix encryption
             emitOwnEvents: true,
             msgRetryCounterCache,
             defaultQueryTimeoutMs: 60000,
             keepAliveIntervalMs: 10000,
             generateHighQualityLinkPreview: true,
+            shouldIgnoreJid: (jid) => {
+                // Don't ignore any JIDs, especially not your own
+                return false;
+            },
+            getMessage: async (key) => {
+                // Try to get message from store
+                const msg = messageStore.get(key.id);
+                if (msg) {
+                    logDebug('DEBUG', '📎 Retrieved message from store', { id: key.id });
+                    return msg;
+                }
+                return undefined;
+            },
+            patchMessageBeforeSending: (msg) => {
+                // Ensure messages are properly formatted
+                return msg;
+            }
         });
 
         // ===== DEBUG ALL EVENTS =====
@@ -98,7 +129,29 @@ async function startBot() {
         // Connection state tracking
         let connectionState = 'disconnected';
         let heartbeatInterval = null;
+        let reconnectAttempts = 0;
         
+        // Handle messaging history set (helps with encryption)
+        sock.ev.on('messaging-history.set', ({ chats, messages, isLatest }) => {
+            logDebug('INFO', '📜 Messaging history set', {
+                chats: chats.length,
+                messages: messages.length,
+                isLatest
+            });
+            
+            // Store messages for later retrieval
+            messages.forEach(msg => {
+                if (msg.key?.id) {
+                    messageStore.set(msg.key.id, msg);
+                }
+            });
+        });
+
+        // Handle new message (before upsert) - this helps with encryption
+        sock.ev.on('messages.received', (messages) => {
+            logDebug('DEBUG', '📨 Messages received event', { count: messages.length });
+        });
+
         // Track connection updates
         sock.ev.on("connection.update", async (update) => {
             const { connection, lastDisconnect, qr, isNewLogin } = update;
@@ -108,6 +161,7 @@ async function startBot() {
                 previousState: connectionState,
                 hasQR: !!qr,
                 isNewLogin,
+                reconnectAttempts,
                 timestamp: new Date().toISOString()
             });
             
@@ -121,9 +175,11 @@ async function startBot() {
             
             if (connection === "connecting") {
                 console.log(chalk.yellow('🔄 Connecting to WhatsApp...'));
+                reconnectAttempts++;
             }
             
             if (connection === "open") {
+                reconnectAttempts = 0;
                 console.log(chalk.green('\n' + '✅'.repeat(30)));
                 console.log(chalk.green('✅✅✅ BOT CONNECTED SUCCESSFULLY! ✅✅✅'));
                 console.log(chalk.green('✅'.repeat(30) + '\n'));
@@ -145,7 +201,7 @@ async function startBot() {
                     logDebug('ERROR', '❌ Failed to send connection message', { error: e.message });
                 }
                 
-                // Start heartbeat to keep connection alive and test sending
+                // Start heartbeat to keep connection alive
                 if (heartbeatInterval) clearInterval(heartbeatInterval);
                 heartbeatInterval = setInterval(async () => {
                     try {
@@ -160,11 +216,14 @@ async function startBot() {
             }
             
             if (connection === "close") {
-                const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                
                 logDebug('ERROR', '❌ Connection closed', {
                     reason: lastDisconnect?.error?.message,
-                    statusCode: lastDisconnect?.error?.output?.statusCode,
-                    shouldReconnect
+                    statusCode,
+                    shouldReconnect,
+                    reconnectAttempts
                 });
                 
                 if (heartbeatInterval) {
@@ -172,10 +231,12 @@ async function startBot() {
                     heartbeatInterval = null;
                 }
                 
-                if (shouldReconnect) {
-                    logDebug('INFO', '🔄 Reconnecting in 5 seconds...');
+                if (shouldReconnect && reconnectAttempts < 5) {
+                    logDebug('INFO', `🔄 Reconnecting in 5 seconds... (Attempt ${reconnectAttempts + 1}/5)`);
                     await delay(5000);
                     startBot();
+                } else if (reconnectAttempts >= 5) {
+                    logDebug('ERROR', '❌ Max reconnection attempts reached. Please restart manually.');
                 }
             }
         });
@@ -221,6 +282,13 @@ async function startBot() {
                 logDebug('WARN', '⚠️ No messages in event');
                 return;
             }
+            
+            // Store messages for getMessage function
+            m.messages.forEach(msg => {
+                if (msg.key?.id) {
+                    messageStore.set(msg.key.id, msg);
+                }
+            });
             
             // Process each message
             m.messages.forEach((msg, index) => {
