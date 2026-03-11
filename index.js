@@ -236,7 +236,7 @@ async function startBot() {
                 
                 // ===== HELP COMMAND =====
                 else if (text === '.help') {
-                    const helpMsg = `*Available Commands:*\n\n`.ping - Test bot\n`.channel text - Send text to channel\nReply to image with .channel - Send image to channel`;
+                    const helpMsg = `*Available Commands:*\n\n• .ping - Test bot\n• .channel text - Send text to channel\n• Reply to image with .channel - Send image to channel\n• .test - Check if bot works`;
                     await sock.sendMessage(from, { text: helpMsg });
                 }
                 
