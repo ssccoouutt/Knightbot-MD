@@ -43,9 +43,6 @@ const { autoreadCommand, isAutoreadEnabled, handleAutoread } = require('./comman
 const tagAllCommand = require('./commands/tagall');
 const helpCommand = require('./commands/help');
 const banCommand = require('./commands/ban');
-// Add with other imports
-const channelCommand = require('./commands/channel');
-const { telegramCommand, setTokenCommand, setSessionCommand, setWaCommand } = require('./commands/telegram');
 const { promoteCommand } = require('./commands/promote');
 const { demoteCommand } = require('./commands/demote');
 const muteCommand = require('./commands/mute');
@@ -69,17 +66,9 @@ const tagNotAdminCommand = require('./commands/tagnotadmin');
 const hideTagCommand = require('./commands/hidetag');
 const jokeCommand = require('./commands/joke');
 const quoteCommand = require('./commands/quote');
-const bulkjoinCommand = require('./commands/bulkjoin');
 const factCommand = require('./commands/fact');
 const weatherCommand = require('./commands/weather');
 const newsCommand = require('./commands/news');
-// Add this line with all the other command imports
-const { downCommand, dlstatusCommand } = require('./commands/down');
-// Add with other imports
-const sendCommand = require('./commands/send');
-// Add with other imports
-const newletCommand = require('./commands/newlet');
-const listchatsCommand = require('./commands/listchats');
 const kickCommand = require('./commands/kick');
 const simageCommand = require('./commands/simage');
 const attpCommand = require('./commands/attp');
@@ -106,8 +95,6 @@ const { flirtCommand } = require('./commands/flirt');
 const characterCommand = require('./commands/character');
 const wastedCommand = require('./commands/wasted');
 const shipCommand = require('./commands/ship');
-// Add with other imports
-const joinCommand = require('./commands/join');
 const groupInfoCommand = require('./commands/groupinfo');
 const resetlinkCommand = require('./commands/resetlink');
 const staffCommand = require('./commands/staff');
@@ -176,35 +163,6 @@ const channelInfo = {
 };
 
 async function handleMessages(sock, messageUpdate, printLog) {
-    // ===== ULTRA DEBUG =====
-    console.log('\n' + '💥'.repeat(30));
-    console.log('💥 MAIN.JS handleMessages WAS CALLED!');
-    console.log('💥'.repeat(30));
-    console.log('Timestamp:', new Date().toISOString());
-    console.log('messageUpdate exists:', !!messageUpdate);
-    
-    if (messageUpdate) {
-        console.log('messageUpdate type:', typeof messageUpdate);
-        console.log('messageUpdate keys:', Object.keys(messageUpdate));
-        console.log('has messages?', !!messageUpdate.messages);
-        console.log('messages type:', typeof messageUpdate.messages);
-        
-        if (messageUpdate.messages && messageUpdate.messages.length > 0) {
-            const msg = messageUpdate.messages[0];
-            console.log('First message exists:', !!msg);
-            if (msg) {
-                console.log('msg.key:', msg.key);
-                console.log('msg.key.fromMe:', msg.key?.fromMe);
-                console.log('msg.key.remoteJid:', msg.key?.remoteJid);
-                console.log('has msg.message?', !!msg.message);
-            }
-        }
-    }
-    console.log('💥'.repeat(30) + '\n');
-    // ===== END ULTRA DEBUG =====
-
-    try {
-        // ... rest of your existing code
     try {
         const { messages, type } = messageUpdate;
         if (type !== 'notify') return;
@@ -364,7 +322,7 @@ async function handleMessages(sock, messageUpdate, printLog) {
         const isAdminCommand = adminCommands.some(cmd => userMessage.startsWith(cmd));
 
         // List of owner commands
-        const ownerCommands = ['.mode', '.autostatus', '.antidelete', '.cleartmp', '.setpp', '.clearsession', '.areact', '.autoreact', '.autotyping', '.send', '.channel', '.join', '.autoread', '.pmblocker'];
+        const ownerCommands = ['.mode', '.autostatus', '.antidelete', '.cleartmp', '.setpp', '.clearsession', '.areact', '.autoreact', '.autotyping', '.autoread', '.pmblocker'];
         const isOwnerCommand = ownerCommands.some(cmd => userMessage.startsWith(cmd));
 
         let isSenderAdmin = false;
@@ -407,8 +365,7 @@ async function handleMessages(sock, messageUpdate, printLog) {
             }
         }
 
-        // Command handlers - Execute commands immediately without waiting for typing indicator
-        // We'll show typing indicator after command execution if needed
+        // Command handlers
         let commandExecuted = false;
 
         switch (true) {
@@ -467,10 +424,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 await stickerCommand(sock, chatId, message);
                 commandExecuted = true;
                 break;
-            case userMessage === '.listchats' || userMessage === '.chats' || userMessage === '.groups':
-                await listchatsCommand(sock, chatId, message);
-                commandExecuted = true;
-                break;
             case userMessage.startsWith('.warnings'):
                 const mentionedJidListWarnings = message.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
                 await warningsCommand(sock, chatId, mentionedJidListWarnings);
@@ -483,11 +436,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 const text = userMessage.slice(4).trim();
                 await ttsCommand(sock, chatId, text, message);
                 break;
-            case userMessage.startsWith('.send '):
-                const sendArgs = rawText.slice(6).trim().split(' ');
-                await sendCommand(sock, chatId, message, sendArgs);
-                commandExecuted = true;
-                break;
             case userMessage.startsWith('.delete') || userMessage.startsWith('.del'):
                 await deleteCommand(sock, chatId, message, senderId);
                 break;
@@ -497,18 +445,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
 
             case userMessage === '.settings':
                 await settingsCommand(sock, chatId, message);
-                break;
-            // Add this case in the switch statement where other commands are
-            // In switch statement:
-            case userMessage.startsWith('.down'):
-                const downUrl = rawText.slice(5).trim();
-                await downCommand(sock, chatId, message, downUrl);
-                commandExecuted = true;
-                break;
-
-            case userMessage === '.dlstatus' || userMessage === '.downloads':
-                await dlstatusCommand(sock, chatId, message);
-                commandExecuted = true;
                 break;
             case userMessage.startsWith('.mode'):
                 // Check if sender is the owner
@@ -575,11 +511,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 }
                 commandExecuted = true;
                 break;
-            case userMessage.startsWith('.join '):
-                const joinArgs = rawText.slice(6).trim().split(' ');
-                await joinCommand(sock, chatId, message, joinArgs);
-                commandExecuted = true;
-                break;
             case userMessage === '.owner':
                 await ownerCommand(sock, chatId);
                 break;
@@ -597,7 +528,7 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 }
                 break;
             case userMessage.startsWith('.tag'):
-                const messageText = rawText.slice(4).trim();  // use rawText here, not userMessage
+                const messageText = rawText.slice(4).trim();
                 const replyMessage = message.message?.extendedTextMessage?.contextInfo?.quotedMessage || null;
                 await tagCommand(sock, chatId, senderId, messageText, replyMessage, message);
                 break;
@@ -676,13 +607,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage.startsWith('.hangman'):
                 startHangman(sock, chatId);
                 break;
-// In your switch statement, replace the bulkjoin case with:
-
-            case userMessage.startsWith('.bulkjoin'):
-                const bulkJoinArgs = rawText.slice(9).trim().split(' '); // Get args after .bulkjoin
-                await bulkjoinCommand(sock, chatId, message, bulkJoinArgs);
-                commandExecuted = true;
-                break;
             case userMessage.startsWith('.guess'):
                 const guessedLetter = userMessage.split(' ')[1];
                 if (guessedLetter) {
@@ -733,11 +657,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage === '.truth':
                 await truthCommand(sock, chatId, message);
                 break;
-            case userMessage.startsWith('.channel '):
-                const channelArgs = rawText.slice(9).trim().split(' ');
-                await channelCommand(sock, chatId, message, channelArgs);
-                commandExecuted = true;
-                break;
             case userMessage === '.clear':
                 if (isGroup) await clearCommand(sock, chatId);
                 break;
@@ -771,28 +690,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage.startsWith('.blur'):
                 const quotedMessage = message.message?.extendedTextMessage?.contextInfo?.quotedMessage;
                 await blurCommand(sock, chatId, message, quotedMessage);
-                break;
-            case userMessage.startsWith('.telegram'):
-                const telegramArgs = rawText.slice(9).trim().split(' ');
-                await telegramCommand(sock, chatId, message, telegramArgs);
-                commandExecuted = true;
-                break;
-
-            case userMessage.startsWith('.settoken'):
-                const token = rawText.slice(9).trim();
-                await setTokenCommand(sock, chatId, message, token);
-                commandExecuted = true;
-                break;
-            case userMessage.startsWith('.setsession'):
-                const sessionString = rawText.slice(11).trim();
-                await setSessionCommand(sock, chatId, message, sessionString);
-                commandExecuted = true;
-                break;
-
-            case userMessage.startsWith('.setwa'):
-                const waNumber = rawText.slice(6).trim();
-                await setWaCommand(sock, chatId, message, waNumber);
-                commandExecuted = true;
                 break;
             case userMessage.startsWith('.welcome'):
                 if (isGroup) {
@@ -947,10 +844,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 break;
             case userMessage.startsWith('.impressive'):
                 await textmakerCommand(sock, chatId, message, userMessage, 'impressive');
-                break;
-            case userMessage === '.newlet' || userMessage === '.newsletter' || userMessage === '.channel':
-                await newletCommand(sock, chatId, message);
-                commandExecuted = true;
                 break;
             case userMessage.startsWith('.matrix'):
                 await textmakerCommand(sock, chatId, message, userMessage, 'matrix');
@@ -1272,7 +1165,7 @@ async function handleMessages(sock, messageUpdate, printLog) {
             default:
                 if (isGroup) {
                     // Handle non-command group messages
-                    if (userMessage) {  // Make sure there's a message
+                    if (userMessage) {
                         await handleChatbotResponse(sock, chatId, message, userMessage, senderId);
                     }
                     await handleTagDetection(sock, chatId, message, senderId);
@@ -1284,7 +1177,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
 
         // If a command was executed, show typing status after command execution
         if (commandExecuted !== false) {
-            // Command was executed, now show typing status after command execution
             await showTypingAfterCommand(sock, chatId);
         }
 
@@ -1306,12 +1198,10 @@ async function handleMessages(sock, messageUpdate, printLog) {
         }
 
         if (userMessage.startsWith('.')) {
-            // After command is processed successfully
             await addCommandReaction(sock, message);
         }
     } catch (error) {
         console.error('❌ Error in message handler:', error.message);
-        // Only try to send error message if we have a valid chatId
         if (chatId) {
             await sock.sendMessage(chatId, {
                 text: '❌ Failed to process command!',
@@ -1325,38 +1215,30 @@ async function handleGroupParticipantUpdate(sock, update) {
     try {
         const { id, participants, action, author } = update;
 
-        // Check if it's a group
         if (!id.endsWith('@g.us')) return;
 
-        // Respect bot mode: only announce promote/demote in public mode
         let isPublic = true;
         try {
             const modeData = JSON.parse(fs.readFileSync('./data/messageCount.json'));
             if (typeof modeData.isPublic === 'boolean') isPublic = modeData.isPublic;
-        } catch (e) {
-            // If reading fails, default to public behavior
-        }
+        } catch (e) {}
 
-        // Handle promotion events
         if (action === 'promote') {
             if (!isPublic) return;
             await handlePromotionEvent(sock, id, participants, author);
             return;
         }
 
-        // Handle demotion events
         if (action === 'demote') {
             if (!isPublic) return;
             await handleDemotionEvent(sock, id, participants, author);
             return;
         }
 
-        // Handle join events
         if (action === 'add') {
             await handleJoinEvent(sock, id, participants);
         }
 
-        // Handle leave events
         if (action === 'remove') {
             await handleLeaveEvent(sock, id, participants);
         }
@@ -1365,7 +1247,6 @@ async function handleGroupParticipantUpdate(sock, update) {
     }
 }
 
-// Instead, export the handlers along with handleMessages
 module.exports = {
     handleMessages,
     handleGroupParticipantUpdate,
