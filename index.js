@@ -288,6 +288,17 @@ async function startXeonBotInc() {
             console.log(chalk.magenta(`${global.themeemoji || '•'} CREDIT: MR UNIQUE HACKER`))
             console.log(chalk.green(`${global.themeemoji || '•'} 🤖 Bot Connected Successfully! ✅`))
             console.log(chalk.blue(`Bot Version: ${settings.version}`))
+            
+            // ===== AUTO-START TELEGRAM BRIDGE AFTER 5 SECONDS =====
+            setTimeout(async () => {
+                try {
+                    const { autoStartTelegramBot } = require('./commands/telegram');
+                    console.log(chalk.cyan('🔄 Auto-starting Telegram bridge...'));
+                    await autoStartTelegramBot(XeonBotInc);
+                } catch (err) {
+                    console.log(chalk.yellow('⚠️ Telegram bridge not available or failed to start:', err.message));
+                }
+            }, 5000);
         }
         
         if (connection === 'close') {
