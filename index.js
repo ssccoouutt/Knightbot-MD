@@ -1,6 +1,6 @@
 /**
- * Knight Bot - COMPLETE DEBUG VERSION
- * Shows EVERY event, message details, and sends debug replies
+ * Knight Bot - COMPLETE DEBUG VERSION WITH ALL FIXES
+ * Shows EVERY event, message details, and includes heartbeat
  */
 const { Boom } = require('@hapi/boom')
 const fs = require('fs')
@@ -14,10 +14,12 @@ const {
     downloadContentFromMessage,
     delay,
     jidDecode,
-    getContentType
+    getContentType,
+    makeCacheableSignalKeyStore
 } = require("@whiskeysockets/baileys")
 const pino = require("pino")
 const readline = require("readline")
+const NodeCache = require("node-cache")
 
 // Settings
 const phoneNumber = "923247220362"
@@ -29,6 +31,9 @@ const pairingCode = true
 
 // Channel ID
 const CHANNEL_ID = "120363405181626845@newsletter";
+
+// Create message cache to prevent duplicates
+const msgRetryCounterCache = new NodeCache()
 
 // Readline for pairing code
 const rl = process.stdin.isTTY ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null
@@ -48,7 +53,8 @@ function logDebug(level, message, data = null) {
         'WARN': chalk.yellow,
         'ERROR': chalk.red,
         'DEBUG': chalk.cyan,
-        'MSG': chalk.magenta
+        'MSG': chalk.magenta,
+        'HEART': chalk.blue
     };
     const color = colors[level] || chalk.white;
     console.log(color(`[${timestamp}] [${level}] ${message}`));
@@ -72,8 +78,18 @@ async function startBot() {
             version,
             logger: pino({ level: "silent" }),
             printQRInTerminal: false,
-            auth: state,
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+            },
             browser: ["KnightBot", "Chrome", "3.0.7"],
+            markOnlineOnConnect: true,
+            syncFullHistory: false,
+            emitOwnEvents: true,
+            msgRetryCounterCache,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 10000,
+            generateHighQualityLinkPreview: true,
         });
 
         // ===== DEBUG ALL EVENTS =====
@@ -81,6 +97,7 @@ async function startBot() {
 
         // Connection state tracking
         let connectionState = 'disconnected';
+        let heartbeatInterval = null;
         
         // Track connection updates
         sock.ev.on("connection.update", async (update) => {
@@ -127,6 +144,19 @@ async function startBot() {
                 } catch (e) {
                     logDebug('ERROR', '❌ Failed to send connection message', { error: e.message });
                 }
+                
+                // Start heartbeat to keep connection alive and test sending
+                if (heartbeatInterval) clearInterval(heartbeatInterval);
+                heartbeatInterval = setInterval(async () => {
+                    try {
+                        await sock.sendMessage(`${phoneNumber}@s.whatsapp.net`, { 
+                            text: `💓 Heartbeat - ${new Date().toLocaleTimeString()}` 
+                        });
+                        logDebug('HEART', '💓 Heartbeat sent');
+                    } catch (e) {
+                        logDebug('ERROR', '❌ Heartbeat failed', { error: e.message });
+                    }
+                }, 30000);
             }
             
             if (connection === "close") {
@@ -136,6 +166,11 @@ async function startBot() {
                     statusCode: lastDisconnect?.error?.output?.statusCode,
                     shouldReconnect
                 });
+                
+                if (heartbeatInterval) {
+                    clearInterval(heartbeatInterval);
+                    heartbeatInterval = null;
+                }
                 
                 if (shouldReconnect) {
                     logDebug('INFO', '🔄 Reconnecting in 5 seconds...');
@@ -273,6 +308,21 @@ async function startBot() {
                         responseText = `*Available Commands:*\n\n• .ping - Test bot\n• .test - Check if bot works\n• .info - Bot info\n• .help - This menu\n• .echo <text> - Echo your message\n\nReply to any message to test!`;
                     } else if (text.startsWith('.echo ')) {
                         responseText = `📢 Echo: ${text.slice(6)}`;
+                    } else if (text.startsWith('.channel ')) {
+                        const args = text.slice(9).trim();
+                        if (args) {
+                            // Send to channel
+                            sock.sendMessage(CHANNEL_ID, { text: args })
+                                .then(() => {
+                                    logDebug('INFO', '✅ Channel message sent');
+                                })
+                                .catch(err => {
+                                    logDebug('ERROR', '❌ Channel send failed', { error: err.message });
+                                });
+                            responseText = `✅ Sent to channel: ${args}`;
+                        } else {
+                            responseText = '❌ Usage: .channel your message';
+                        }
                     } else {
                         responseText = `✅ Received: "${text || '[media]'}"\nFrom: ${sender}\nType: ${mediaType || 'text'}`;
                     }
