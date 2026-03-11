@@ -176,6 +176,26 @@ const channelInfo = {
 };
 
 async function handleMessages(sock, messageUpdate, printLog) {
+    // ===== ADD THIS DEBUG BLOCK AT THE VERY TOP =====
+    console.log('\n' + '🔴'.repeat(30));
+    console.log('🔴 handleMessages FIRED!');
+    console.log('🔴'.repeat(30));
+    console.log('messageUpdate type:', typeof messageUpdate);
+    console.log('messageUpdate keys:', Object.keys(messageUpdate || {}));
+    console.log('has messages:', !!messageUpdate?.messages);
+    console.log('messages length:', messageUpdate?.messages?.length);
+    
+    if (messageUpdate?.messages?.[0]) {
+        const msg = messageUpdate.messages[0];
+        console.log('Message key:', msg.key);
+        console.log('Message from:', msg.key?.remoteJid);
+        console.log('Has message object:', !!msg.message);
+        if (msg.message) {
+            console.log('Message types:', Object.keys(msg.message));
+        }
+    }
+    console.log('🔴'.repeat(30) + '\n');
+    // ===== END DEBUG ====
     try {
         const { messages, type } = messageUpdate;
         if (type !== 'notify') return;
