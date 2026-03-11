@@ -176,26 +176,35 @@ const channelInfo = {
 };
 
 async function handleMessages(sock, messageUpdate, printLog) {
-    // ===== ADD THIS DEBUG BLOCK AT THE VERY TOP =====
-    console.log('\n' + '🔴'.repeat(30));
-    console.log('🔴 handleMessages FIRED!');
-    console.log('🔴'.repeat(30));
-    console.log('messageUpdate type:', typeof messageUpdate);
-    console.log('messageUpdate keys:', Object.keys(messageUpdate || {}));
-    console.log('has messages:', !!messageUpdate?.messages);
-    console.log('messages length:', messageUpdate?.messages?.length);
+    // ===== ULTRA DEBUG =====
+    console.log('\n' + '💥'.repeat(30));
+    console.log('💥 MAIN.JS handleMessages WAS CALLED!');
+    console.log('💥'.repeat(30));
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('messageUpdate exists:', !!messageUpdate);
     
-    if (messageUpdate?.messages?.[0]) {
-        const msg = messageUpdate.messages[0];
-        console.log('Message key:', msg.key);
-        console.log('Message from:', msg.key?.remoteJid);
-        console.log('Has message object:', !!msg.message);
-        if (msg.message) {
-            console.log('Message types:', Object.keys(msg.message));
+    if (messageUpdate) {
+        console.log('messageUpdate type:', typeof messageUpdate);
+        console.log('messageUpdate keys:', Object.keys(messageUpdate));
+        console.log('has messages?', !!messageUpdate.messages);
+        console.log('messages type:', typeof messageUpdate.messages);
+        
+        if (messageUpdate.messages && messageUpdate.messages.length > 0) {
+            const msg = messageUpdate.messages[0];
+            console.log('First message exists:', !!msg);
+            if (msg) {
+                console.log('msg.key:', msg.key);
+                console.log('msg.key.fromMe:', msg.key?.fromMe);
+                console.log('msg.key.remoteJid:', msg.key?.remoteJid);
+                console.log('has msg.message?', !!msg.message);
+            }
         }
     }
-    console.log('🔴'.repeat(30) + '\n');
-    // ===== END DEBUG ====
+    console.log('💥'.repeat(30) + '\n');
+    // ===== END ULTRA DEBUG =====
+
+    try {
+        // ... rest of your existing code
     try {
         const { messages, type } = messageUpdate;
         if (type !== 'notify') return;
