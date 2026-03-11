@@ -1,6 +1,6 @@
 /**
- * Knight Bot - ULTRA DEBUG VERSION
- * Shows EVERY event and message like your simplest test
+ * Knight Bot - COMPLETE DEBUG VERSION
+ * Shows EVERY event, message details, and sends debug replies
  */
 const { Boom } = require('@hapi/boom')
 const fs = require('fs')
@@ -12,7 +12,9 @@ const {
     DisconnectReason,
     fetchLatestBaileysVersion,
     downloadContentFromMessage,
-    delay
+    delay,
+    jidDecode,
+    getContentType
 } = require("@whiskeysockets/baileys")
 const pino = require("pino")
 const readline = require("readline")
@@ -38,9 +40,28 @@ const question = (text) => {
     }
 }
 
+// Logger with colors
+function logDebug(level, message, data = null) {
+    const timestamp = new Date().toISOString();
+    const colors = {
+        'INFO': chalk.green,
+        'WARN': chalk.yellow,
+        'ERROR': chalk.red,
+        'DEBUG': chalk.cyan,
+        'MSG': chalk.magenta
+    };
+    const color = colors[level] || chalk.white;
+    console.log(color(`[${timestamp}] [${level}] ${message}`));
+    if (data) {
+        console.log(color(JSON.stringify(data, (key, value) => 
+            typeof value === 'bigint' ? value.toString() : value
+        , 2)));
+    }
+}
+
 async function startBot() {
     try {
-        console.log(chalk.cyan('🔧 Starting ULTRA DEBUG bot with Baileys version:', require('@whiskeysockets/baileys/package.json').version));
+        console.log(chalk.cyan('🔧 Starting COMPLETE DEBUG bot with Baileys version:', require('@whiskeysockets/baileys/package.json').version));
         console.log(chalk.yellow(`📱 Your number: ${phoneNumber}`));
         console.log(chalk.yellow(`📢 Channel ID: ${CHANNEL_ID}`));
         
@@ -56,14 +77,18 @@ async function startBot() {
         });
 
         // ===== DEBUG ALL EVENTS =====
-        console.log('\n📋 Listening for all events...\n');
+        console.log('\n' + chalk.bgCyan.black('📋 LISTENING FOR ALL EVENTS 📋') + '\n');
 
-        // Track connection state
+        // Connection state tracking
+        let connectionState = 'disconnected';
+        
+        // Track connection updates
         sock.ev.on("connection.update", async (update) => {
             const { connection, lastDisconnect, qr, isNewLogin } = update;
             
-            console.log('\n🔌 CONNECTION UPDATE:', {
-                connection,
+            logDebug('INFO', '🔌 CONNECTION UPDATE', {
+                connection: connection || 'no change',
+                previousState: connectionState,
                 hasQR: !!qr,
                 isNewLogin,
                 timestamp: new Date().toISOString()
@@ -73,12 +98,19 @@ async function startBot() {
                 console.log(chalk.yellow('\n📱 QR Code generated'));
             }
             
+            if (connection) {
+                connectionState = connection;
+            }
+            
             if (connection === "connecting") {
                 console.log(chalk.yellow('🔄 Connecting to WhatsApp...'));
             }
             
             if (connection === "open") {
-                console.log(chalk.green('\n✅✅✅ BOT CONNECTED SUCCESSFULLY! ✅✅✅'));
+                console.log(chalk.green('\n' + '✅'.repeat(30)));
+                console.log(chalk.green('✅✅✅ BOT CONNECTED SUCCESSFULLY! ✅✅✅'));
+                console.log(chalk.green('✅'.repeat(30) + '\n'));
+                
                 console.log(chalk.blue(`Bot Version: 3.0.7`));
                 console.log(chalk.magenta(`\n${global.themeemoji || '•'} YT CHANNEL: MR UNIQUE HACKER`));
                 console.log(chalk.magenta(`${global.themeemoji || '•'} GITHUB: mrunqiuehacker`));
@@ -89,21 +121,24 @@ async function startBot() {
                 // Send connection message
                 try {
                     await sock.sendMessage(`${phoneNumber}@s.whatsapp.net`, { 
-                        text: '✅ Bot is online! Send .ping to test' 
+                        text: '✅ Bot is online! Send any message to test' 
                     });
-                    console.log('📤 Sent connection message to owner');
+                    logDebug('INFO', '📤 Sent connection message to owner');
                 } catch (e) {
-                    console.log('❌ Failed to send connection message:', e.message);
+                    logDebug('ERROR', '❌ Failed to send connection message', { error: e.message });
                 }
             }
             
             if (connection === "close") {
                 const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-                console.log(chalk.red(`❌ Connection closed, reconnecting: ${shouldReconnect}`));
-                console.log('Close reason:', lastDisconnect?.error?.message);
+                logDebug('ERROR', '❌ Connection closed', {
+                    reason: lastDisconnect?.error?.message,
+                    statusCode: lastDisconnect?.error?.output?.statusCode,
+                    shouldReconnect
+                });
                 
                 if (shouldReconnect) {
-                    console.log('🔄 Reconnecting in 5 seconds...');
+                    logDebug('INFO', '🔄 Reconnecting in 5 seconds...');
                     await delay(5000);
                     startBot();
                 }
@@ -112,132 +147,196 @@ async function startBot() {
 
         // Handle creds update
         sock.ev.on("creds.update", saveCreds);
-        console.log('✓ Creds update handler registered');
+        logDebug('DEBUG', '✓ Creds update handler registered');
 
         // Handle pairing code
         if (pairingCode && !sock.authState.creds.registered) {
-            console.log(chalk.green('\n📱 Requesting pairing code...'));
+            logDebug('INFO', '📱 Requesting pairing code...');
             
             setTimeout(async () => {
                 try {
                     let code = await sock.requestPairingCode(phoneNumber);
                     code = code?.match(/.{1,4}/g)?.join("-") || code;
-                    console.log(chalk.bgGreen.black(`\n🔐 Your Pairing Code: ${code}\n`));
+                    console.log(chalk.bgGreen.black(`\n🔐 ===== PAIRING CODE =====`));
+                    console.log(chalk.bgGreen.black(`       ${code}       `));
+                    console.log(chalk.bgGreen.black(`=========================\n`));
                     console.log(chalk.yellow('1. Open WhatsApp on your phone'));
                     console.log(chalk.yellow('2. Go to Settings > Linked Devices'));
                     console.log(chalk.yellow('3. Tap "Link a Device"'));
                     console.log(chalk.yellow(`4. Enter this code: ${code}\n`));
                 } catch (error) {
-                    console.error('❌ Pairing code error:', error);
+                    logDebug('ERROR', '❌ Pairing code error', { error: error.message });
                 }
             }, 3000);
         }
 
-        // ===== DEBUG ALL MESSAGES =====
+        // ===== COMPLETE MESSAGE DEBUGGING =====
         sock.ev.on("messages.upsert", (m) => {
-            console.log('\n' + '='.repeat(60));
-            console.log('📥📥📥 MESSAGES.UPSERT EVENT TRIGGERED! 📥📥📥');
-            console.log('='.repeat(60));
+            console.log('\n' + chalk.bgMagenta.white('📥 MESSAGES.UPSERT EVENT TRIGGERED 📥'));
+            console.log(chalk.magenta('='.repeat(60)));
             
-            // Log event type
-            console.log('Event type:', m.type);
-            console.log('Has messages:', !!m.messages);
-            console.log('Message count:', m.messages?.length);
+            // Log basic event info
+            logDebug('MSG', 'Event details', {
+                type: m.type,
+                messageCount: m.messages?.length,
+                hasMessages: !!m.messages
+            });
             
-            if (m.messages && m.messages.length > 0) {
-                const msg = m.messages[0];
-                console.log('\n📨 RAW MESSAGE DATA:');
-                console.log('  RemoteJid:', msg.key?.remoteJid);
-                console.log('  From Me:', msg.key?.fromMe);
-                console.log('  ID:', msg.key?.id);
-                console.log('  Participant:', msg.key?.participant);
-                console.log('  Has Message:', !!msg.message);
-                
-                if (msg.message) {
-                    console.log('  Message Types:', Object.keys(msg.message));
-                    
-                    // Try to extract text
-                    let text = '';
-                    if (msg.message.conversation) {
-                        text = msg.message.conversation;
-                        console.log('  Conversation Text:', text);
-                    }
-                    if (msg.message.extendedTextMessage?.text) {
-                        text = msg.message.extendedTextMessage.text;
-                        console.log('  Extended Text:', text);
-                    }
-                    if (msg.message.imageMessage?.caption) {
-                        text = msg.message.imageMessage.caption;
-                        console.log('  Image Caption:', text);
-                    }
-                    if (msg.message.videoMessage?.caption) {
-                        text = msg.message.videoMessage.caption;
-                        console.log('  Video Caption:', text);
-                    }
-                    
-                    // Log if it's a command
-                    if (text && text.startsWith('.')) {
-                        console.log('  🎯 COMMAND DETECTED:', text);
-                    }
-                    
-                    // ALWAYS respond to ANY message - just like your simplest test
-                    if (text && !msg.key?.fromMe) {
-                        console.log('  ✅ VALID MESSAGE DETECTED - WILL RESPOND!');
-                        
-                        // Send response
-                        sock.sendMessage(msg.key.remoteJid, { 
-                            text: `✅ Echo: "${text}"` 
-                        }).then(() => {
-                            console.log('  ✅ Response sent!');
-                        }).catch(err => {
-                            console.log('  ❌ Failed to send response:', err.message);
-                        });
-                    }
-                }
+            if (!m.messages || m.messages.length === 0) {
+                logDebug('WARN', '⚠️ No messages in event');
+                return;
             }
-            console.log('='.repeat(60) + '\n');
+            
+            // Process each message
+            m.messages.forEach((msg, index) => {
+                console.log(chalk.cyan(`\n--- MESSAGE ${index + 1} ---`));
+                
+                // Message key info
+                logDebug('DEBUG', 'Message key', {
+                    remoteJid: msg.key?.remoteJid,
+                    fromMe: msg.key?.fromMe,
+                    id: msg.key?.id,
+                    participant: msg.key?.participant
+                });
+                
+                // Sender info
+                const sender = msg.key?.participant || msg.key?.remoteJid;
+                const isGroup = msg.key?.remoteJid?.endsWith('@g.us');
+                logDebug('INFO', '👤 Sender', {
+                    sender,
+                    isGroup,
+                    chat: msg.key?.remoteJid
+                });
+                
+                // Check if message has content
+                if (!msg.message) {
+                    logDebug('WARN', '⚠️ No message content');
+                    return;
+                }
+                
+                // Get message type
+                const msgType = getContentType(msg.message);
+                logDebug('DEBUG', 'Message type', { type: msgType });
+                
+                // Extract text based on type
+                let text = '';
+                let mediaType = null;
+                
+                if (msgType === 'conversation') {
+                    text = msg.message.conversation || '';
+                } else if (msgType === 'extendedTextMessage') {
+                    text = msg.message.extendedTextMessage?.text || '';
+                } else if (msgType === 'imageMessage') {
+                    text = msg.message.imageMessage?.caption || '';
+                    mediaType = 'image';
+                } else if (msgType === 'videoMessage') {
+                    text = msg.message.videoMessage?.caption || '';
+                    mediaType = 'video';
+                } else if (msgType === 'audioMessage') {
+                    mediaType = 'audio';
+                } else if (msgType === 'documentMessage') {
+                    text = msg.message.documentMessage?.caption || '';
+                    mediaType = 'document';
+                } else if (msgType === 'stickerMessage') {
+                    mediaType = 'sticker';
+                }
+                
+                logDebug('INFO', '📨 Message content', {
+                    text: text || '[no text]',
+                    mediaType,
+                    hasMedia: !!mediaType,
+                    length: text.length
+                });
+                
+                // Check for quoted messages
+                const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+                if (quotedMsg) {
+                    logDebug('DEBUG', '📎 Has quoted message', {
+                        quotedType: Object.keys(quotedMsg)[0]
+                    });
+                }
+                
+                // ===== ALWAYS RESPOND TO ANY MESSAGE FOR TESTING =====
+                if (!msg.key?.fromMe && (text || mediaType)) {
+                    logDebug('INFO', '✅ VALID MESSAGE DETECTED - SENDING RESPONSE');
+                    
+                    // Prepare response
+                    let responseText = '';
+                    
+                    if (text === '.ping') {
+                        responseText = 'pong 🏓';
+                    } else if (text === '.test') {
+                        responseText = '✅ Bot is working!';
+                    } else if (text === '.info') {
+                        responseText = `🤖 Bot Info:\n• Version: 3.0.7\n• Owner: ${owner[0]}\n• Connected: Yes\n• Uptime: ${Math.floor(process.uptime())}s`;
+                    } else if (text === '.help' || text === '.menu') {
+                        responseText = `*Available Commands:*\n\n• .ping - Test bot\n• .test - Check if bot works\n• .info - Bot info\n• .help - This menu\n• .echo <text> - Echo your message\n\nReply to any message to test!`;
+                    } else if (text.startsWith('.echo ')) {
+                        responseText = `📢 Echo: ${text.slice(6)}`;
+                    } else {
+                        responseText = `✅ Received: "${text || '[media]'}"\nFrom: ${sender}\nType: ${mediaType || 'text'}`;
+                    }
+                    
+                    // Send response
+                    sock.sendMessage(msg.key.remoteJid, { text: responseText })
+                        .then(() => {
+                            logDebug('INFO', '✅ Response sent successfully', { to: msg.key.remoteJid });
+                        })
+                        .catch(err => {
+                            logDebug('ERROR', '❌ Failed to send response', { error: err.message });
+                        });
+                }
+            });
+            
+            console.log(chalk.magenta('='.repeat(60)) + '\n');
         });
 
         // ===== DEBUG OTHER EVENTS =====
         sock.ev.on("messages.reaction", (r) => {
-            console.log('\n🔔 REACTION EVENT:', r);
+            logDebug('DEBUG', '🔔 Reaction event', { reaction: r });
         });
 
         sock.ev.on("presence.update", (p) => {
-            console.log('👤 Presence update');
+            logDebug('DEBUG', '👤 Presence update', { presence: p });
         });
 
         sock.ev.on("contacts.update", (c) => {
-            console.log('📇 Contacts update');
+            logDebug('DEBUG', '📇 Contacts update', { count: c.length });
         });
 
         sock.ev.on("chats.update", (c) => {
-            console.log('💬 Chats update');
+            logDebug('DEBUG', '💬 Chats update', { count: c.length });
         });
 
         sock.ev.on("group-participants.update", (g) => {
-            console.log('👥 Group participants update');
+            logDebug('DEBUG', '👥 Group participants update', {
+                group: g.id,
+                action: g.action,
+                participants: g.participants
+            });
         });
 
-        console.log('✓ All event handlers registered');
-        console.log('\n📱 Waiting for messages... Send ANY message to test\n');
+        logDebug('INFO', '✓ All event handlers registered');
+        console.log(chalk.green('\n📱 Bot is ready! Send ANY message to see debug output\n'));
 
         return sock;
         
     } catch (error) {
-        console.error('❌ Fatal error:', error);
+        logDebug('ERROR', '❌ Fatal error', { error: error.message, stack: error.stack });
         await delay(5000);
         startBot();
     }
 }
 
 // Start the bot
-startBot().catch(console.error);
+startBot().catch(error => {
+    logDebug('ERROR', '❌ Fatal error in startBot', { error: error.message });
+});
 
 process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err);
+    logDebug('ERROR', '❌ Uncaught Exception', { error: err.message, stack: err.stack });
 });
 
 process.on('unhandledRejection', (err) => {
-    console.error('❌ Unhandled Rejection:', err);
+    logDebug('ERROR', '❌ Unhandled Rejection', { error: err.message });
 });
