@@ -4,6 +4,7 @@ const { NewMessage } = require('telegram/events');
 const fs = require('fs');
 const path = require('path');
 const { Telegraf } = require('telegraf');
+const sharp = require('sharp'); // For thumbnail generation
 
 const TEMP_DIR = path.join(process.cwd(), 'temp');
 let telegramClient = null;
@@ -62,6 +63,20 @@ function log(level, message, data = null) {
     );
 }
 
+// ===== THUMBNAIL GENERATION FOR CHANNELS =====
+async function generateThumbnail(buffer) {
+    try {
+        const thumbnail = await sharp(buffer)
+            .resize(100, 100, { fit: 'inside' })
+            .jpeg({ quality: 50 })
+            .toBuffer();
+        return thumbnail.toString('base64');
+    } catch (err) {
+        log('WARN', 'Thumbnail generation failed', { error: err.message });
+        return null;
+    }
+}
+
 // ===== FIXED KEEP-ALIVE - Use correct MTProto method =====
 function startKeepAlive() {
     if (!telegramClient) return;
@@ -73,7 +88,6 @@ function startKeepAlive() {
         }
         
         try {
-            // Correct way to keep connection alive - just get a simple API method
             await telegramClient.getMe();
             log('DEBUG', 'Keep-alive ping sent');
         } catch (err) {
@@ -248,7 +262,7 @@ async function downloadMedia(client, message) {
     }
 }
 
-// ===== SEND TO ALL TARGETS (Channel + Groups) =====
+// ===== SEND TO ALL TARGETS (Channel + Groups) WITH THUMBNAILS =====
 async function sendToAllTargets(messageData) {
     try {
         if (!whatsappSock) {
@@ -261,12 +275,20 @@ async function sendToAllTargets(messageData) {
         let successCount = 0;
         let failedTargets = [];
         
-        // Process targets one by one with delays to ensure delivery
+        // Generate thumbnail once for all channel sends
+        let thumbnail = null;
+        if (messageData.type === 'media' && messageData.mediaType === 'photo') {
+            thumbnail = await generateThumbnail(messageData.buffer);
+            log('DEBUG', 'Thumbnail generated for channel', { hasThumbnail: !!thumbnail });
+        }
+        
+        // Process targets one by one with delays
         for (let i = 0; i < ALL_TARGETS.length; i++) {
             const target = ALL_TARGETS[i];
+            const isChannel = target === CRITICAL_CHANNEL;
             
             try {
-                log('DEBUG', `Sending to target ${i+1}/${ALL_TARGETS.length}: ${target}`);
+                log('DEBUG', `Sending to target ${i+1}/${ALL_TARGETS.length}: ${target}${isChannel ? ' (CHANNEL)' : ''}`);
                 
                 if (messageData.type === 'text') {
                     await whatsappSock.sendMessage(target, { text: messageData.content });
@@ -283,45 +305,55 @@ async function sendToAllTargets(messageData) {
                     
                     const fileSizeMB = mediaSize / (1024 * 1024);
                     
+                    // Prepare message options
+                    let messageOptions = {};
+                    
                     if (fileSizeMB > 100) {
-                        await whatsappSock.sendMessage(target, {
+                        messageOptions = {
                             document: mediaBuffer,
                             fileName: mediaFileName || 'file.bin',
                             caption: mediaCaption,
                             mimetype: mediaMimeType
-                        });
+                        };
                     } else {
                         if (mediaType === 'photo') {
-                            await whatsappSock.sendMessage(target, {
+                            messageOptions = {
                                 image: mediaBuffer,
                                 caption: mediaCaption
-                            });
+                            };
+                            // Add thumbnail for channel photos
+                            if (isChannel && thumbnail) {
+                                messageOptions.jpegThumbnail = thumbnail;
+                                log('DEBUG', 'Added thumbnail to channel photo');
+                            }
                         } else if (mediaType === 'video') {
-                            await whatsappSock.sendMessage(target, {
+                            messageOptions = {
                                 video: mediaBuffer,
                                 caption: mediaCaption
-                            });
+                            };
                         } else if (mediaType === 'document') {
-                            await whatsappSock.sendMessage(target, {
+                            messageOptions = {
                                 document: mediaBuffer,
                                 fileName: mediaFileName,
                                 caption: mediaCaption,
                                 mimetype: mediaMimeType
-                            });
+                            };
                         } else {
-                            await whatsappSock.sendMessage(target, {
+                            messageOptions = {
                                 document: mediaBuffer,
                                 fileName: mediaFileName || 'file',
                                 caption: mediaCaption,
                                 mimetype: mediaMimeType
-                            });
+                            };
                         }
                     }
-                    log('INFO', `✅ Media sent`, { target, type: mediaType });
+                    
+                    await whatsappSock.sendMessage(target, messageOptions);
+                    log('INFO', `✅ Media sent`, { target, type: mediaType, isChannel });
                     successCount++;
                 }
                 
-                // Delay between sends to avoid rate limiting
+                // Delay between sends
                 if (i < ALL_TARGETS.length - 1) {
                     await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
                 }
