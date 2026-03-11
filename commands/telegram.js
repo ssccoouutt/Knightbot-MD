@@ -17,6 +17,9 @@ let whatsappSock = null;
 const pendingMessages = new Map();
 const pendingDownloads = new Map();
 
+// Auto-start tracking
+let autoStartCompleted = false;
+
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const API_ID = 32086282;
@@ -501,7 +504,7 @@ async function startTelegramBot(sock, chatId) {
             initTelegramBot();
         }
         
-        // Start keep-alive with FIXED method
+        // Start keep-alive
         const keepAliveInterval = startKeepAlive();
         
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -663,18 +666,48 @@ async function startTelegramBot(sock, chatId) {
         
         isActive = true;
         
-        await sock.sendMessage(chatId, { 
-            text: `✅ Bridge active\n👥 ALL = Channel + ${WHATSAPP_GROUPS.length} groups` 
-        });
+        // Mark auto-start as completed if this was an auto-start
+        if (chatId === 'system') {
+            autoStartCompleted = true;
+            log('INFO', '✅ Telegram bridge auto-started successfully');
+        } else {
+            await sock.sendMessage(chatId, { 
+                text: `✅ Bridge active\n👥 ALL = Channel + ${WHATSAPP_GROUPS.length} groups` 
+            });
+        }
+        
         return true;
         
     } catch (error) {
         log('ERROR', 'Failed to start', { error: error.message });
-        await sock.sendMessage(chatId, { text: '❌ Failed to start' });
+        if (chatId !== 'system') {
+            await sock.sendMessage(chatId, { text: '❌ Failed to start' });
+        }
         return false;
     }
 }
 
+// ===== AUTO-START FUNCTION =====
+async function autoStartTelegramBot(sock) {
+    // Don't auto-start if already active or auto-start completed
+    if (isActive || autoStartCompleted) {
+        log('DEBUG', 'Telegram bridge already active, skipping auto-start');
+        return true;
+    }
+    
+    log('INFO', '🔄 Auto-starting Telegram bridge...');
+    const result = await startTelegramBot(sock, 'system');
+    
+    if (result) {
+        log('INFO', '✅ Telegram bridge auto-started successfully');
+    } else {
+        log('ERROR', '❌ Telegram bridge auto-start failed');
+    }
+    
+    return result;
+}
+
+// ===== COMMAND HANDLER =====
 async function telegramCommand(sock, chatId, message, args) {
     const sub = args[0]?.toLowerCase();
     
@@ -712,8 +745,10 @@ async function telegramCommand(sock, chatId, message, args) {
 async function setTokenCommand() {}
 async function setWaCommand() {}
 
+// ===== EXPORTS =====
 module.exports = {
     telegramCommand,
     setTokenCommand,
-    setWaCommand
+    setWaCommand,
+    autoStartTelegramBot
 };
