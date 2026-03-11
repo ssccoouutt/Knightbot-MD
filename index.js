@@ -288,22 +288,6 @@ async function startXeonBotInc() {
             console.log(chalk.magenta(`${global.themeemoji || '•'} CREDIT: MR UNIQUE HACKER`))
             console.log(chalk.green(`${global.themeemoji || '•'} 🤖 Bot Connected Successfully! ✅`))
             console.log(chalk.blue(`Bot Version: ${settings.version}`))
-
-            // ===== AUTO-START TELEGRAM BRIDGE - NON-BLOCKING =====
-            try {
-                const { autoStartTelegramBot } = require('./commands/telegram');
-                // Use setImmediate to avoid blocking message processing
-                setImmediate(() => {
-                    autoStartTelegramBot(XeonBotInc).catch(err => {
-                        // Silently fail - don't affect WhatsApp commands
-                        if (err.message !== 'Telegram bridge already active') {
-                            console.log(chalk.gray('ℹ️ Telegram bridge auto-start:', err.message));
-                        }
-                    });
-                });
-            } catch (err) {
-                // Telegram commands not available - ignore
-            }
         }
         
         if (connection === 'close') {
